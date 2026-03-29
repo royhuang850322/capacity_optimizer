@@ -6,8 +6,10 @@ sheets so the Excel output can replace the former Streamlit views.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
+from collections import defaultdict
 from datetime import datetime
 from typing import Any, List, Optional
 
@@ -19,7 +21,7 @@ from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from models import AllocationResult, Config, ValidationIssue
+from models import AllocationResult, Config, LoadRecord, ValidationIssue
 from result_analysis import (
     build_executive_insights,
     build_mode_comparison_frame,
@@ -59,8 +61,146 @@ def build_output_path(config: Config, mode: str) -> str:
     return os.path.join(config.output_folder, filename)
 
 
+def _build_planner_demand_map(loads: Optional[List[LoadRecord]]) -> dict[tuple[str, str], list[tuple[str, float]]]:
+    planner_demand: dict[tuple[str, str], dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    if not loads:
+        return {}
+
+    for load in loads:
+        tons = max(float(load.forecast_tons or 0.0), 0.0)
+        if tons <= 0:
+            continue
+        key = (str(load.month), str(load.product))
+        planner = str(load.planner_name or "").strip()
+        planner_demand[key][planner] += tons
+
+    return {
+        key: [(planner, totals[planner]) for planner in sorted(totals, key=str.casefold)]
+        for key, totals in planner_demand.items()
+    }
+
+
+def _split_value_by_planner(total: float, planner_weights: list[tuple[str, float]]) -> dict[str, float]:
+    if not planner_weights:
+        return {}
+
+    total_units = int(round(max(float(total or 0.0), 0.0) * 10000))
+    active_weights = [(planner, weight) for planner, weight in planner_weights if weight > 0]
+    if total_units <= 0 or not active_weights:
+        return {planner: 0.0 for planner, _weight in planner_weights}
+
+    total_weight = sum(weight for _planner, weight in active_weights)
+    allocations: list[list[Any]] = []
+    assigned_units = 0
+    for planner, weight in planner_weights:
+        exact_units = total_units * weight / total_weight if weight > 0 else 0.0
+        base_units = math.floor(exact_units)
+        allocations.append([planner, base_units, exact_units - base_units])
+        assigned_units += base_units
+
+    residual_units = total_units - assigned_units
+    allocations.sort(key=lambda item: (-item[2], str(item[0]).casefold()))
+    for idx in range(residual_units):
+        allocations[idx % len(allocations)][1] += 1
+
+    allocations.sort(key=lambda item: str(item[0]).casefold())
+    return {planner: units / 10000.0 for planner, units, _fraction in allocations}
+
+
+def _plannerize_results(
+    results: List[AllocationResult],
+    loads: Optional[List[LoadRecord]],
+) -> List[AllocationResult]:
+    planner_demand = _build_planner_demand_map(loads)
+    if not planner_demand:
+        return [
+            AllocationResult(
+                month=result.month,
+                product=result.product,
+                product_family=result.product_family,
+                plant=result.plant,
+                allocation_type=result.allocation_type,
+                work_center=result.work_center,
+                route_type=result.route_type,
+                priority=result.priority,
+                demand_tons=result.demand_tons,
+                allocated_tons=result.allocated_tons,
+                outsourced_tons=result.outsourced_tons,
+                unmet_tons=result.unmet_tons,
+                capacity_share_pct=result.capacity_share_pct,
+                planner_name=result.planner_name,
+            )
+            for result in results
+        ]
+
+    plannerized: list[AllocationResult] = []
+    for result in results:
+        key = (result.month, result.product)
+        planner_weights = planner_demand.get(key)
+        if not planner_weights:
+            plannerized.append(
+                AllocationResult(
+                    month=result.month,
+                    product=result.product,
+                    product_family=result.product_family,
+                    plant=result.plant,
+                    allocation_type=result.allocation_type,
+                    work_center=result.work_center,
+                    route_type=result.route_type,
+                    priority=result.priority,
+                    demand_tons=result.demand_tons,
+                    allocated_tons=result.allocated_tons,
+                    outsourced_tons=result.outsourced_tons,
+                    unmet_tons=result.unmet_tons,
+                    capacity_share_pct=result.capacity_share_pct,
+                    planner_name=result.planner_name,
+                )
+            )
+            continue
+
+        demand_split = _split_value_by_planner(result.demand_tons, planner_weights)
+        allocated_split = _split_value_by_planner(result.allocated_tons, planner_weights)
+        outsourced_split = _split_value_by_planner(result.outsourced_tons, planner_weights)
+        unmet_split = _split_value_by_planner(result.unmet_tons, planner_weights)
+        cap_share_split = _split_value_by_planner(result.capacity_share_pct, planner_weights)
+
+        for planner_name, _weight in planner_weights:
+            planner_allocated = round(allocated_split.get(planner_name, 0.0), 4)
+            planner_outsourced = round(outsourced_split.get(planner_name, 0.0), 4)
+            planner_unmet = round(unmet_split.get(planner_name, 0.0), 4)
+
+            if result.allocation_type == "Internal" and planner_allocated <= 0.0:
+                continue
+            if result.allocation_type == "Outsourced" and planner_outsourced <= 0.0:
+                continue
+            if result.allocation_type == "Unmet" and planner_unmet <= 0.0:
+                continue
+
+            plannerized.append(
+                AllocationResult(
+                    month=result.month,
+                    product=result.product,
+                    product_family=result.product_family,
+                    plant=result.plant,
+                    allocation_type=result.allocation_type,
+                    work_center=result.work_center,
+                    route_type=result.route_type,
+                    priority=result.priority,
+                    demand_tons=round(demand_split.get(planner_name, 0.0), 4),
+                    allocated_tons=planner_allocated,
+                    outsourced_tons=planner_outsourced,
+                    unmet_tons=planner_unmet,
+                    capacity_share_pct=round(cap_share_split.get(planner_name, 0.0), 4),
+                    planner_name=planner_name,
+                )
+            )
+
+    return plannerized
+
+
 def write_results(
     results: List[AllocationResult],
+    loads: Optional[List[LoadRecord]],
     config: Config,
     issues: List[ValidationIssue],
     months: List[str],
@@ -81,7 +221,7 @@ def write_results(
     wb = Workbook()
     wb.remove(wb.active)
 
-    artifact = _build_mode_artifact(results, config, months, mode)
+    artifact = _build_mode_artifact(results, loads, config, months, mode)
     df_detail = artifact["df_detail"]
     wc_load_df = artifact["wc_load_df"]
     run_info_df = artifact["run_info_df"]
@@ -98,6 +238,8 @@ def write_results(
     _write_product_risk_analysis(wb, analysis)
 
     _write_detail(wb, df_detail)
+    _write_planner_summary(wb, analysis)
+    _write_planner_product_month_summary(wb, analysis)
     _write_allocation_summary(wb, df_detail, months)
     _write_outsource_summary(wb, df_detail, months)
     _write_unmet_summary(wb, df_detail, months)
@@ -115,6 +257,7 @@ def write_mode_comparison_summary(
     config: Config,
     months: List[str],
     metrics_by_mode: Optional[dict[str, dict[str, Any]]] = None,
+    mode_loads: Optional[dict[str, List[LoadRecord]]] = None,
 ) -> str:
     """
     Write a standalone comparison workbook when both ModeA and ModeB are run.
@@ -128,7 +271,7 @@ def write_mode_comparison_summary(
     out_path = os.path.join(config.output_folder, f"Summary of Mode A and Mode B_{ts}.xlsx")
 
     artifacts = {
-        mode: _build_mode_artifact(mode_results[mode], config, months, mode)
+        mode: _build_mode_artifact(mode_results[mode], mode_loads.get(mode) if mode_loads else None, config, months, mode)
         for mode in ("ModeA", "ModeB")
     }
     comparison_metrics = dict(metrics_by_mode or {})
@@ -143,6 +286,7 @@ def write_mode_comparison_summary(
     _write_bottleneck_comparison(wb, artifacts)
     _write_heatmap_comparison(wb, artifacts)
     _write_product_risk_comparison(wb, artifacts)
+    _write_planner_comparison(wb, artifacts)
     _write_comparison_run_info(wb, config, comparison_metrics, os.path.basename(out_path))
 
     wb.save(out_path)
@@ -153,6 +297,7 @@ def _results_to_df(results: List[AllocationResult]) -> pd.DataFrame:
     rows = []
     columns = [
         "Month",
+        "PlannerName",
         "Product",
         "ProductFamily",
         "Plant",
@@ -170,6 +315,7 @@ def _results_to_df(results: List[AllocationResult]) -> pd.DataFrame:
         rows.append(
             {
                 "Month": result.month,
+                "PlannerName": result.planner_name,
                 "Product": result.product,
                 "ProductFamily": result.product_family,
                 "Plant": result.plant,
@@ -189,11 +335,13 @@ def _results_to_df(results: List[AllocationResult]) -> pd.DataFrame:
 
 def _build_mode_artifact(
     results: List[AllocationResult],
+    loads: Optional[List[LoadRecord]],
     config: Config,
     months: List[str],
     mode: str,
 ) -> dict[str, Any]:
-    df_detail = _results_to_df(results)
+    plannerized_results = _plannerize_results(results, loads)
+    df_detail = _results_to_df(plannerized_results)
     wc_load_df = _build_wc_load_frame(df_detail, months)
     run_info_df = _build_run_info_df(config, mode)
     analysis = build_result_analysis(df_detail, wc_load_df, run_info_df)
@@ -245,7 +393,7 @@ def _build_run_info_df(config: Config, mode: str) -> pd.DataFrame:
                 "Yes" if getattr(config, "skip_validation_errors", False) else "No",
             ),
             ("Notes", config.notes or ""),
-            ("Tool_Version", "2.0.0"),
+            ("Tool_Version", "1.0.1"),
         ],
         columns=["Parameter", "Value"],
     )
@@ -1026,6 +1174,229 @@ def _write_product_risk_comparison(wb: Workbook, artifacts: dict[str, dict[str, 
     _autofit(ws)
 
 
+def _write_planner_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]) -> None:
+    ws = wb.create_sheet("Planner_Compare")
+    _write_sheet_title(ws, "Planner Comparison")
+
+    planner_a = artifacts["ModeA"]["analysis"]["planner_summary"].copy()
+    planner_b = artifacts["ModeB"]["analysis"]["planner_summary"].copy()
+    for frame in (planner_a, planner_b):
+        if "PlannerName" in frame.columns:
+            frame = frame
+    if not planner_a.empty:
+        planner_a = planner_a[planner_a["PlannerName"].astype(str).str.strip().ne("")]
+    if not planner_b.empty:
+        planner_b = planner_b[planner_b["PlannerName"].astype(str).str.strip().ne("")]
+
+    if planner_a.empty and planner_b.empty:
+        ws["A3"] = "No planner comparison data is available for this result."
+        return
+
+    planner_compare = planner_a.merge(
+        planner_b,
+        on="PlannerName",
+        how="outer",
+        suffixes=("_ModeA", "_ModeB"),
+    ).fillna(0.0)
+    planner_compare["Demand_Delta"] = planner_compare["Demand_Tons_ModeB"] - planner_compare["Demand_Tons_ModeA"]
+    planner_compare["Internal_Delta"] = planner_compare["Internal_Tons_ModeB"] - planner_compare["Internal_Tons_ModeA"]
+    planner_compare["Outsourced_Delta"] = planner_compare["Outsourced_Tons_ModeB"] - planner_compare["Outsourced_Tons_ModeA"]
+    planner_compare["Unmet_Delta"] = planner_compare["Unmet_Tons_ModeB"] - planner_compare["Unmet_Tons_ModeA"]
+    planner_compare["Service_Level_Delta"] = planner_compare["Service_Level_ModeB"] - planner_compare["Service_Level_ModeA"]
+    planner_compare["SortKey"] = planner_compare[["Demand_Tons_ModeA", "Demand_Tons_ModeB"]].max(axis=1)
+    planner_compare = planner_compare.sort_values(["SortKey", "PlannerName"], ascending=[False, True])
+
+    layout = _write_table(
+        ws,
+        planner_compare[
+            [
+                "PlannerName",
+                "Demand_Tons_ModeA",
+                "Demand_Tons_ModeB",
+                "Internal_Tons_ModeA",
+                "Internal_Tons_ModeB",
+                "Outsourced_Tons_ModeA",
+                "Outsourced_Tons_ModeB",
+                "Unmet_Tons_ModeA",
+                "Unmet_Tons_ModeB",
+                "Service_Level_ModeA",
+                "Service_Level_ModeB",
+                "Service_Level_Delta",
+            ]
+        ],
+        start_row=3,
+        start_col=1,
+        num_formats={
+            "Demand_Tons_ModeA": TONS_FMT,
+            "Demand_Tons_ModeB": TONS_FMT,
+            "Internal_Tons_ModeA": TONS_FMT,
+            "Internal_Tons_ModeB": TONS_FMT,
+            "Outsourced_Tons_ModeA": TONS_FMT,
+            "Outsourced_Tons_ModeB": TONS_FMT,
+            "Unmet_Tons_ModeA": TONS_FMT,
+            "Unmet_Tons_ModeB": TONS_FMT,
+            "Service_Level_ModeA": PCT_FMT,
+            "Service_Level_ModeB": PCT_FMT,
+            "Service_Level_Delta": PCT_FMT,
+        },
+        freeze="B2",
+    )
+
+    service_chart = BarChart()
+    service_chart.title = "Planner Service Level Comparison"
+    service_chart.y_axis.title = "Service level"
+    service_chart.height = 8
+    service_chart.width = 12
+    service_chart.add_data(
+        Reference(
+            ws,
+            min_col=layout["col_index"]["Service_Level_ModeA"],
+            min_row=layout["start_row"],
+            max_col=layout["col_index"]["Service_Level_ModeB"],
+            max_row=min(layout["end_row"], layout["start_row"] + 12),
+        ),
+        titles_from_data=True,
+        from_rows=False,
+    )
+    service_chart.set_categories(
+        Reference(
+            ws,
+            min_col=layout["col_index"]["PlannerName"],
+            min_row=layout["start_row"] + 1,
+            max_row=min(layout["end_row"], layout["start_row"] + 12),
+        )
+    )
+    service_chart.y_axis.numFmt = PCT_FMT
+    ws.add_chart(service_chart, "N3")
+
+    unmet_chart = BarChart()
+    unmet_chart.type = "bar"
+    unmet_chart.title = "Planner Residual Unmet Comparison"
+    unmet_chart.height = 8
+    unmet_chart.width = 12
+    unmet_chart.add_data(
+        Reference(
+            ws,
+            min_col=layout["col_index"]["Unmet_Tons_ModeA"],
+            min_row=layout["start_row"],
+            max_col=layout["col_index"]["Unmet_Tons_ModeB"],
+            max_row=min(layout["end_row"], layout["start_row"] + 12),
+        ),
+        titles_from_data=True,
+        from_rows=False,
+    )
+    unmet_chart.set_categories(
+        Reference(
+            ws,
+            min_col=layout["col_index"]["PlannerName"],
+            min_row=layout["start_row"] + 1,
+            max_row=min(layout["end_row"], layout["start_row"] + 12),
+        )
+    )
+    ws.add_chart(unmet_chart, "N21")
+
+    focus_planner = str(planner_compare.iloc[0]["PlannerName"]) if not planner_compare.empty else ""
+    if focus_planner:
+        ws["A24"] = f"Focused planner comparison: {focus_planner}"
+        ws["A24"].font = Font(bold=True, color="1F4E79", size=11)
+
+        planner_month_a = (
+            artifacts["ModeA"]["analysis"]["planner_product_month_summary"]
+            .query("PlannerName == @focus_planner")
+            .groupby("Month", as_index=False)
+            .agg(
+                Demand_ModeA=("Demand_Tons", "sum"),
+                Internal_ModeA=("Internal_Tons", "sum"),
+                Outsourced_ModeA=("Outsourced_Tons", "sum"),
+                Unmet_ModeA=("Unmet_Tons", "sum"),
+            )
+        )
+        planner_month_b = (
+            artifacts["ModeB"]["analysis"]["planner_product_month_summary"]
+            .query("PlannerName == @focus_planner")
+            .groupby("Month", as_index=False)
+            .agg(
+                Demand_ModeB=("Demand_Tons", "sum"),
+                Internal_ModeB=("Internal_Tons", "sum"),
+                Outsourced_ModeB=("Outsourced_Tons", "sum"),
+                Unmet_ModeB=("Unmet_Tons", "sum"),
+            )
+        )
+        planner_month_compare = planner_month_a.merge(planner_month_b, on="Month", how="outer").fillna(0.0).sort_values("Month")
+        planner_month_compare["Service_Level_ModeA"] = (
+            planner_month_compare["Internal_ModeA"] + planner_month_compare["Outsourced_ModeA"]
+        ).div(planner_month_compare["Demand_ModeA"].replace(0, pd.NA)).fillna(0.0)
+        planner_month_compare["Service_Level_ModeB"] = (
+            planner_month_compare["Internal_ModeB"] + planner_month_compare["Outsourced_ModeB"]
+        ).div(planner_month_compare["Demand_ModeB"].replace(0, pd.NA)).fillna(0.0)
+
+        focus_layout = _write_table(
+            ws,
+            planner_month_compare[
+                [
+                    "Month",
+                    "Demand_ModeA",
+                    "Demand_ModeB",
+                    "Internal_ModeA",
+                    "Internal_ModeB",
+                    "Outsourced_ModeA",
+                    "Outsourced_ModeB",
+                    "Unmet_ModeA",
+                    "Unmet_ModeB",
+                    "Service_Level_ModeA",
+                    "Service_Level_ModeB",
+                ]
+            ],
+            start_row=25,
+            start_col=1,
+            num_formats={
+                "Demand_ModeA": TONS_FMT,
+                "Demand_ModeB": TONS_FMT,
+                "Internal_ModeA": TONS_FMT,
+                "Internal_ModeB": TONS_FMT,
+                "Outsourced_ModeA": TONS_FMT,
+                "Outsourced_ModeB": TONS_FMT,
+                "Unmet_ModeA": TONS_FMT,
+                "Unmet_ModeB": TONS_FMT,
+                "Service_Level_ModeA": PCT_FMT,
+                "Service_Level_ModeB": PCT_FMT,
+            },
+        )
+
+        focus_chart = LineChart()
+        focus_chart.title = f"{focus_planner} Monthly Service Level Comparison"
+        focus_chart.height = 7
+        focus_chart.width = 12
+        focus_chart.add_data(
+            Reference(
+                ws,
+                min_col=focus_layout["col_index"]["Service_Level_ModeA"],
+                min_row=focus_layout["start_row"],
+                max_col=focus_layout["col_index"]["Service_Level_ModeB"],
+                max_row=focus_layout["end_row"],
+            ),
+            titles_from_data=True,
+            from_rows=False,
+        )
+        focus_chart.set_categories(
+            Reference(
+                ws,
+                min_col=focus_layout["col_index"]["Month"],
+                min_row=focus_layout["start_row"] + 1,
+                max_row=focus_layout["end_row"],
+            )
+        )
+        focus_chart.y_axis.numFmt = PCT_FMT
+        ws.add_chart(focus_chart, "M25")
+
+    _write_note(
+        ws,
+        f"A{max(layout['end_row'] + 2, 40)}",
+        "Planner comparison is based on planner-level traceability after the product-month optimization result is proportionally split back to planner demand shares.",
+    )
+    _autofit(ws)
+
+
 def _write_comparison_run_info(
     wb: Workbook,
     config: Config,
@@ -1559,6 +1930,93 @@ def _write_product_risk_analysis(wb: Workbook, analysis: dict[str, Any]) -> None
     _autofit(ws)
 
 
+def _write_planner_summary(wb: Workbook, analysis: dict[str, Any]) -> None:
+    ws = wb.create_sheet("Planner_Result_Summary")
+    _write_sheet_title(ws, "Planner Result Summary")
+
+    planner_summary = analysis.get("planner_summary", pd.DataFrame())
+    if planner_summary.empty:
+        ws["A3"] = "No planner summary is available for this result."
+        return
+
+    layout = _write_table(
+        ws,
+        planner_summary[
+            [
+                "PlannerName",
+                "Demand_Tons",
+                "Internal_Tons",
+                "Outsourced_Tons",
+                "Unmet_Tons",
+                "Supplied_Tons",
+                "Service_Level",
+            ]
+        ],
+        start_row=3,
+        start_col=1,
+        num_formats={
+            "Demand_Tons": TONS_FMT,
+            "Internal_Tons": TONS_FMT,
+            "Outsourced_Tons": TONS_FMT,
+            "Unmet_Tons": TONS_FMT,
+            "Supplied_Tons": TONS_FMT,
+            "Service_Level": PCT_FMT,
+        },
+    )
+    _write_note(
+        ws,
+        f"A{layout['end_row'] + 2}",
+        "This sheet shows planner-level traceability after the product-month optimization result is split back to planner shares.",
+    )
+    _autofit(ws)
+
+
+def _write_planner_product_month_summary(wb: Workbook, analysis: dict[str, Any]) -> None:
+    ws = wb.create_sheet("Planner_Product_Month")
+    _write_sheet_title(ws, "Planner Product Month Summary")
+
+    planner_product_month = analysis.get("planner_product_month_summary", pd.DataFrame())
+    if planner_product_month.empty:
+        ws["A3"] = "No planner product-month summary is available for this result."
+        return
+
+    layout = _write_table(
+        ws,
+        planner_product_month[
+            [
+                "Month",
+                "PlannerName",
+                "Product",
+                "ProductFamily",
+                "Plant",
+                "Demand_Tons",
+                "Internal_Tons",
+                "Outsourced_Tons",
+                "Unmet_Tons",
+                "Supplied_Tons",
+                "Service_Level",
+            ]
+        ],
+        start_row=3,
+        start_col=1,
+        num_formats={
+            "Demand_Tons": TONS_FMT,
+            "Internal_Tons": TONS_FMT,
+            "Outsourced_Tons": TONS_FMT,
+            "Unmet_Tons": TONS_FMT,
+            "Supplied_Tons": TONS_FMT,
+            "Service_Level": PCT_FMT,
+        },
+        freeze="C2",
+    )
+    _write_note(
+        ws,
+        f"A{layout['end_row'] + 2}",
+        "Use this sheet when you need to trace a planner's monthly demand into internal, outsourced, and unmet outcomes.",
+    )
+    _autofit(ws)
+
+
 def _write_detail(wb: Workbook, df: pd.DataFrame) -> None:
     ws = wb.create_sheet("Allocation_Detail")
     _write_table(
@@ -1571,7 +2029,7 @@ def _write_detail(wb: Workbook, df: pd.DataFrame) -> None:
             "Unmet_Tons": TONS_FMT,
             "CapacityShare_Pct": PCT_FMT,
         },
-        freeze="B2",
+        freeze="C2",
     )
 
 
@@ -1581,8 +2039,11 @@ def _write_allocation_summary(wb: Workbook, df: pd.DataFrame, months: List[str])
     if internal_df.empty:
         ws["A1"] = "No data"
         return
+    index_cols = ["Product", "ProductFamily", "Plant"]
+    if "PlannerName" in internal_df.columns:
+        index_cols = ["PlannerName", *index_cols]
     pivot = internal_df.pivot_table(
-        index=["Product", "ProductFamily", "Plant"],
+        index=index_cols,
         columns="Month",
         values="Allocated_Tons",
         aggfunc="sum",
@@ -1590,7 +2051,8 @@ def _write_allocation_summary(wb: Workbook, df: pd.DataFrame, months: List[str])
     )
     pivot = pivot.reindex(columns=[month for month in months if month in pivot.columns], fill_value=0)
     pivot.reset_index(inplace=True)
-    _write_table(ws, pivot, tons_cols=pivot.columns[3:].tolist(), freeze="D2")
+    freeze_col = get_column_letter(len(index_cols) + 1)
+    _write_table(ws, pivot, tons_cols=pivot.columns[len(index_cols):].tolist(), freeze=f"{freeze_col}2")
 
 
 def _write_outsource_summary(wb: Workbook, df: pd.DataFrame, months: List[str]) -> None:
@@ -1600,8 +2062,11 @@ def _write_outsource_summary(wb: Workbook, df: pd.DataFrame, months: List[str]) 
         ws["A1"] = "No data"
         return
 
+    index_cols = ["Product", "ProductFamily", "Plant"]
+    if "PlannerName" in outsource_df.columns:
+        index_cols = ["PlannerName", *index_cols]
     pivot = outsource_df.pivot_table(
-        index=["Product", "ProductFamily", "Plant"],
+        index=index_cols,
         columns="Month",
         values="Outsourced_Tons",
         aggfunc="sum",
@@ -1609,12 +2074,13 @@ def _write_outsource_summary(wb: Workbook, df: pd.DataFrame, months: List[str]) 
     )
     pivot = pivot.reindex(columns=[month for month in months if month in pivot.columns], fill_value=0)
     pivot.reset_index(inplace=True)
+    freeze_col = get_column_letter(len(index_cols) + 1)
     _write_table(
         ws,
         pivot,
-        tons_cols=pivot.columns[3:].tolist(),
-        freeze="D2",
-        highlight_positive_cols=pivot.columns[3:].tolist(),
+        tons_cols=pivot.columns[len(index_cols):].tolist(),
+        freeze=f"{freeze_col}2",
+        highlight_positive_cols=pivot.columns[len(index_cols):].tolist(),
     )
 
 
@@ -1624,8 +2090,11 @@ def _write_unmet_summary(wb: Workbook, df: pd.DataFrame, months: List[str]) -> N
         ws["A1"] = "No data"
         return
 
+    index_cols = ["Product", "ProductFamily", "Plant"]
+    if "PlannerName" in df.columns:
+        index_cols = ["PlannerName", *index_cols]
     pivot = df.pivot_table(
-        index=["Product", "ProductFamily", "Plant"],
+        index=index_cols,
         columns="Month",
         values="Unmet_Tons",
         aggfunc="max",
@@ -1633,12 +2102,13 @@ def _write_unmet_summary(wb: Workbook, df: pd.DataFrame, months: List[str]) -> N
     )
     pivot = pivot.reindex(columns=[month for month in months if month in pivot.columns], fill_value=0)
     pivot.reset_index(inplace=True)
+    freeze_col = get_column_letter(len(index_cols) + 1)
     _write_table(
         ws,
         pivot,
-        tons_cols=pivot.columns[3:].tolist(),
-        freeze="D2",
-        highlight_positive_cols=pivot.columns[3:].tolist(),
+        tons_cols=pivot.columns[len(index_cols):].tolist(),
+        freeze=f"{freeze_col}2",
+        highlight_positive_cols=pivot.columns[len(index_cols):].tolist(),
     )
 
 

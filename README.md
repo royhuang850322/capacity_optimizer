@@ -265,6 +265,10 @@ For Windows workstation / shared-folder deployment, use:
 
 - [IT_DEPLOYMENT_CHECKLIST_CN.md](/C:/Users/super/capacity_optimizer/IT_DEPLOYMENT_CHECKLIST_CN.md)
 
+## Changelog
+
+- [CHANGELOG.md](/C:/Users/super/capacity_optimizer/CHANGELOG.md)
+
 ## License
 
 MIT. See [LICENSE](/C:/Users/super/capacity_optimizer/LICENSE).

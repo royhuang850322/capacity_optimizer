@@ -182,6 +182,7 @@ def main(
         }
         metrics_by_mode[selected_mode] = metrics
         run_payloads[selected_mode] = {
+            "loads": loads,
             "results": results,
             "issues": issues,
             "toller_products": toller_products,
@@ -199,6 +200,7 @@ def main(
         payload = run_payloads[selected_mode]
         output_paths[selected_mode] = write_results(
             results=payload["results"],
+            loads=payload["loads"],
             config=config,
             issues=payload["issues"],
             months=months,
@@ -211,6 +213,7 @@ def main(
     if set(modes_to_run) == {"ModeA", "ModeB"}:
         comparison_path = write_mode_comparison_summary(
             mode_results={mode_name: run_payloads[mode_name]["results"] for mode_name in ("ModeA", "ModeB")},
+            mode_loads={mode_name: run_payloads[mode_name]["loads"] for mode_name in ("ModeA", "ModeB")},
             config=config,
             months=months,
             metrics_by_mode=metrics_by_mode,
@@ -406,7 +409,7 @@ def _selected_scenario(configured_scenario: str | None) -> str | None:
 
 def _banner() -> None:
     click.echo("=" * 60)
-    click.echo("  Chemical Capacity Optimizer  v2.0")
+    click.echo("  Chemical Capacity Optimizer  v1.0.1")
     click.echo("  Excel Control Workbook + Python Optimization + Excel Reports")
     click.echo("=" * 60)
 

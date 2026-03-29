@@ -94,6 +94,7 @@ class AllocationResult:
     outsourced_tons: float
     unmet_tons: float
     capacity_share_pct: float   # fraction of that WC's monthly capacity consumed
+    planner_name: str = ""
 
 
 @dataclass

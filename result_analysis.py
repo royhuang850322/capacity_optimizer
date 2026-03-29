@@ -47,6 +47,8 @@ def build_result_analysis(
             "run_info": run_info_df,
             "scenario_name": "",
             "mode_name": "",
+            "planner_product_month_summary": pd.DataFrame(),
+            "planner_summary": pd.DataFrame(),
             "product_month_summary": pd.DataFrame(),
             "monthly_summary": pd.DataFrame(),
             "product_summary": pd.DataFrame(),
@@ -57,7 +59,7 @@ def build_result_analysis(
     detail_df = detail_df.copy()
     run_info_df = run_info_df.copy()
 
-    for col in ("Month", "Product", "ProductFamily", "Plant", "AllocationType", "WorkCenter", "RouteType"):
+    for col in ("Month", "PlannerName", "Product", "ProductFamily", "Plant", "AllocationType", "WorkCenter", "RouteType"):
         if col in detail_df.columns:
             detail_df[col] = detail_df[col].map(_as_text)
 
@@ -65,15 +67,65 @@ def build_result_analysis(
         if col in detail_df.columns:
             detail_df[col] = pd.to_numeric(detail_df[col], errors="coerce").fillna(0.0)
 
+    if "PlannerName" in detail_df.columns and detail_df["PlannerName"].astype(str).str.strip().ne("").any():
+        planner_product_month_summary = (
+            detail_df.groupby(["Month", "Product", "PlannerName"], as_index=False)
+            .agg(
+                ProductFamily=("ProductFamily", "first"),
+                Plant=("Plant", "first"),
+                Demand_Tons=("Demand_Tons", "max"),
+                Internal_Tons=("Allocated_Tons", "sum"),
+                Outsourced_Tons=("Outsourced_Tons", "sum"),
+                Unmet_Tons=("Unmet_Tons", "max"),
+            )
+            .sort_values(["Month", "PlannerName", "Product"])
+        )
+    else:
+        planner_product_month_summary = (
+            detail_df.groupby(["Month", "Product"], as_index=False)
+            .agg(
+                ProductFamily=("ProductFamily", "first"),
+                Plant=("Plant", "first"),
+                Demand_Tons=("Demand_Tons", "max"),
+                Internal_Tons=("Allocated_Tons", "sum"),
+                Outsourced_Tons=("Outsourced_Tons", "sum"),
+                Unmet_Tons=("Unmet_Tons", "max"),
+            )
+            .sort_values(["Month", "Product"])
+        )
+        planner_product_month_summary.insert(1, "PlannerName", "")
+
+    planner_product_month_summary["Supplied_Tons"] = (
+        planner_product_month_summary["Internal_Tons"] + planner_product_month_summary["Outsourced_Tons"]
+    )
+    planner_product_month_summary["Service_Level"] = compute_service_level(
+        planner_product_month_summary,
+        "Demand_Tons",
+        "Supplied_Tons",
+    )
+
+    planner_summary = (
+        planner_product_month_summary.groupby("PlannerName", as_index=False)
+        .agg(
+            Demand_Tons=("Demand_Tons", "sum"),
+            Internal_Tons=("Internal_Tons", "sum"),
+            Outsourced_Tons=("Outsourced_Tons", "sum"),
+            Unmet_Tons=("Unmet_Tons", "sum"),
+        )
+        .sort_values(["Unmet_Tons", "Demand_Tons"], ascending=[False, False])
+    )
+    planner_summary["Supplied_Tons"] = planner_summary["Internal_Tons"] + planner_summary["Outsourced_Tons"]
+    planner_summary["Service_Level"] = compute_service_level(planner_summary, "Demand_Tons", "Supplied_Tons")
+
     product_month_summary = (
-        detail_df.groupby(["Month", "Product"], as_index=False)
+        planner_product_month_summary.groupby(["Month", "Product"], as_index=False)
         .agg(
             ProductFamily=("ProductFamily", "first"),
             Plant=("Plant", "first"),
-            Demand_Tons=("Demand_Tons", "max"),
-            Internal_Tons=("Allocated_Tons", "sum"),
+            Demand_Tons=("Demand_Tons", "sum"),
+            Internal_Tons=("Internal_Tons", "sum"),
             Outsourced_Tons=("Outsourced_Tons", "sum"),
-            Unmet_Tons=("Unmet_Tons", "max"),
+            Unmet_Tons=("Unmet_Tons", "sum"),
         )
         .sort_values(["Month", "Product"])
     )
@@ -100,7 +152,7 @@ def build_result_analysis(
     monthly_summary["Service_Level"] = compute_service_level(monthly_summary, "Demand_Tons", "Supplied_Tons")
 
     product_summary = (
-        product_month_summary.groupby(["Product", "ProductFamily", "Plant"], as_index=False)
+        planner_product_month_summary.groupby(["Product", "ProductFamily", "Plant"], as_index=False)
         .agg(
             Demand_Tons=("Demand_Tons", "sum"),
             Internal_Tons=("Internal_Tons", "sum"),
@@ -151,6 +203,8 @@ def build_result_analysis(
         "run_info": run_info_df,
         "scenario_name": run_info_map.get("Scenario_Name", ""),
         "mode_name": run_info_map.get("Mode", ""),
+        "planner_product_month_summary": planner_product_month_summary,
+        "planner_summary": planner_summary,
         "product_month_summary": product_month_summary,
         "monthly_summary": monthly_summary,
         "product_summary": product_summary,

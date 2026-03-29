@@ -41,6 +41,7 @@ Thumbs.db
 
 # Local outputs
 output/
+tests/_tmp/
 
 # Local document files; remove this rule if you want to publish Word docs
 *.docx
