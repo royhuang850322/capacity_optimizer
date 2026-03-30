@@ -19,7 +19,36 @@ This project now uses an Excel-first workflow:
 setup_requirements.bat
 ```
 
-### 2. 生成或刷新控制工作簿
+### 2. 生成机器指纹并申请授权
+
+如果你准备发的是正式机绑版，新电脑第一次使用前先运行：
+
+```bash
+get_machine_fingerprint.bat
+```
+
+它会在项目根目录生成：
+
+```text
+machine_fingerprint.json
+```
+
+把这个文件发给 `RSCP`，拿到签名后的：
+
+```text
+license.json
+```
+
+然后把 `license.json` 放到项目根目录，也就是和 `main.py`、`run_optimizer.bat` 同级的位置。
+
+如果你准备发的是短期试用版，也可以跳过机器指纹这一步，直接由 `RSCP` 签发一个：
+
+- `trial`
+- `unbound`
+
+的 `license.json`，然后直接放到项目根目录。
+
+### 3. 生成或刷新控制工作簿
 
 ```bash
 python create_template.py
@@ -31,7 +60,7 @@ python create_template.py
 Tooling Control Panel/Capacity_Optimizer_Control.xlsx
 ```
 
-### 3. 在 Excel 里填写控制参数
+### 4. 在 Excel 里填写控制参数
 
 打开 [Capacity_Optimizer_Control.xlsx](/C:/Users/super/capacity_optimizer/Tooling%20Control%20Panel/Capacity_Optimizer_Control.xlsx)，在 `Control_Panel` sheet 填写：
 
@@ -56,7 +85,7 @@ Tooling Control Panel/Capacity_Optimizer_Control.xlsx
 - `Input_Master_Folder = Data_Input`
 - `Output_Folder = output`
 
-### 4. 运行工具
+### 5. 运行工具
 
 命令行方式：
 
@@ -74,11 +103,35 @@ python main.py --input-template "Tooling Control Panel/Capacity_Optimizer_Contro
 
 ```bash
 setup_requirements.bat
+get_machine_fingerprint.bat
 python create_template.py
 python main.py --input-template "Tooling Control Panel/Capacity_Optimizer_Control.xlsx"
 ```
 
-Edit the `Control_Panel` sheet in `Tooling Control Panel/Capacity_Optimizer_Control.xlsx` before running.
+Before running, place a valid `license.json` in the project root and edit the `Control_Panel` sheet in `Tooling Control Panel/Capacity_Optimizer_Control.xlsx`.
+
+## License Workflow
+
+### Trial / Unbound
+
+- RSCP generates a short-term unbound `license.json`
+- Copy `license.json` into the project root
+- Run the optimizer
+
+### Machine-Locked
+
+- Run `get_machine_fingerprint.bat` on the target computer
+- Send `machine_fingerprint.json` to `RSCP`
+- Receive the signed `license.json`
+- Copy `license.json` into the project root
+- Run the optimizer
+
+The optimizer stops immediately when:
+
+- `license.json` is missing
+- the license signature is invalid
+- the license has expired
+- the machine fingerprint does not match the licensed computer
 
 ## Planning Modes
 
@@ -197,6 +250,7 @@ Comparison workbook sheets:
 - `Bottleneck_Compare`
 - `WC_Heatmap_Compare`
 - `Product_Risk_Compare`
+- `Planner_Compare`
 - `Run_Info`
 
 ## Control Workbook
@@ -215,6 +269,23 @@ Runner:
 
 - [main.py](/C:/Users/super/capacity_optimizer/main.py)
 
+License helper:
+
+- [get_machine_fingerprint.bat](/C:/Users/super/capacity_optimizer/get_machine_fingerprint.bat)
+
+Internal signing helpers:
+
+- [generate_license.py](/C:/Users/super/capacity_optimizer/license_admin/license_tools/generate_license.py)
+- [generate_trial_license.py](/C:/Users/super/capacity_optimizer/license_admin/license_tools/generate_trial_license.py)
+- [open_license_generator.bat](/C:/Users/super/capacity_optimizer/open_license_generator.bat)
+- [license_generator_ui.py](/C:/Users/super/capacity_optimizer/license_admin/license_tools/license_generator_ui.py)
+- [license_tools README](/C:/Users/super/capacity_optimizer/license_admin/license_tools/README.md)
+
+License operation guides:
+
+- [客户授权使用说明](/C:/Users/super/capacity_optimizer/docs/CUSTOMER_LICENSE_QUICKSTART_CN.md)
+- [内部 License 发放 SOP](/C:/Users/super/capacity_optimizer/docs/INTERNAL_LICENSE_SOP_CN.md)
+
 ## Repository Structure
 
 ```text
@@ -227,13 +298,23 @@ Runner:
 |-- result_analysis.py
 |-- create_template.py
 |-- create_sample_data.py
+|-- get_machine_fingerprint.bat
+|-- license_validator.py
+|-- machine_fingerprint.py
 |-- Data_Input/
 |-- Tooling Control Panel/
 |   `-- Capacity_Optimizer_Control.xlsx
 |-- output/
+|-- docs/
+|   |-- CHANGELOG.md
+|   |-- CUSTOMER_LICENSE_QUICKSTART_CN.md
+|   |-- INTERNAL_LICENSE_SOP_CN.md
+|   `-- IT_DEPLOYMENT_CHECKLIST_CN.md
+|-- license_admin/
+|   |-- license_tools/
+|   `-- private_keys/
 |-- tests/
 |   `-- test_regressions.py
-|-- IT_DEPLOYMENT_CHECKLIST_CN.md
 `-- run_optimizer.bat
 ```
 
@@ -263,11 +344,11 @@ python -m unittest discover -s tests -v
 
 For Windows workstation / shared-folder deployment, use:
 
-- [IT_DEPLOYMENT_CHECKLIST_CN.md](/C:/Users/super/capacity_optimizer/IT_DEPLOYMENT_CHECKLIST_CN.md)
+- [IT_DEPLOYMENT_CHECKLIST_CN.md](/C:/Users/super/capacity_optimizer/docs/IT_DEPLOYMENT_CHECKLIST_CN.md)
 
 ## Changelog
 
-- [CHANGELOG.md](/C:/Users/super/capacity_optimizer/CHANGELOG.md)
+- [CHANGELOG.md](/C:/Users/super/capacity_optimizer/docs/CHANGELOG.md)
 
 ## License
 

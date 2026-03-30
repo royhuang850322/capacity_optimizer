@@ -2,12 +2,12 @@
 
 本文档适用于当前版本的工具。
 
-当前版本不是浏览器系统，不使用 Streamlit 页面。  
-用户通过：
+当前版本不是浏览器系统，不使用 Streamlit 页面。用户通过：
 
 1. Excel 控制工作簿设置参数
 2. Python 程序运行优化
 3. Excel 结果工作簿查看报告
+4. `license.json` 授权文件控制是否可运行
 
 ---
 
@@ -56,13 +56,17 @@ C:\Apps\capacity_optimizer
 - 完整项目目录
 - 输入数据目录
 - 用户最终使用的控制工作簿路径
+- 客户对应的 `license.json`
 
 至少确认这些文件存在：
 
 - `main.py`
 - `create_template.py`
 - `requirements.txt`
+- `setup_requirements.bat`
+- `get_machine_fingerprint.bat`
 - `run_optimizer.bat`
+- `license.json`
 - `Tooling Control Panel\Capacity_Optimizer_Control.xlsx`
 
 ---
@@ -113,6 +117,42 @@ python create_template.py
 ```text
 Tooling Control Panel\Capacity_Optimizer_Control.xlsx
 ```
+
+### 5.6 获取授权文件
+
+当前支持两种授权方式：
+
+1. 试用版 / `unbound`
+   - RSCP 直接签发 `license.json`
+   - 不需要机器指纹
+
+2. 正式版 / `machine_locked`
+   - 先生成机器指纹
+   - 再由 RSCP 针对指定电脑签发 `license.json`
+
+### 5.7 生成机器指纹
+
+如果要给这台电脑发正式授权，先执行：
+
+```powershell
+get_machine_fingerprint.bat
+```
+
+它会生成：
+
+```text
+machine_fingerprint.json
+```
+
+把这个文件发给 RSCP，换取当前电脑专用的 `license.json`。
+
+### 5.8 放置授权文件
+
+把 RSCP 返回的 `license.json` 放到项目根目录，也就是和这些文件同级：
+
+- `main.py`
+- `setup_requirements.bat`
+- `run_optimizer.bat`
 
 ---
 
@@ -166,8 +206,17 @@ run_optimizer.bat
 它会：
 
 1. 查找 `Tooling Control Panel\Capacity_Optimizer_Control.xlsx`
-2. 运行优化
-3. 成功后打开 `output\` 目录
+2. 检查依赖和 `license.json`
+3. 运行优化
+4. 成功后打开 `output\` 目录
+
+如果缺少授权文件，先运行：
+
+```powershell
+get_machine_fingerprint.bat
+```
+
+把生成的 `machine_fingerprint.json` 发给 RSCP，再把返回的 `license.json` 放回项目根目录。
 
 ---
 
@@ -176,9 +225,15 @@ run_optimizer.bat
 以下内容同时满足，即视为部署完成：
 
 1. 可以打开 `Tooling Control Panel\Capacity_Optimizer_Control.xlsx`
-2. 可以成功运行 `python main.py --input-template "...Control.xlsx"`
-3. `output\` 目录中能生成结果工作簿
-4. 结果工作簿包含以下 sheet：
+2. 项目根目录里存在有效的 `license.json`
+3. 可以成功运行 `python main.py --input-template "...Control.xlsx"`
+4. `output\` 目录中能生成结果工作簿
+5. 结果工作簿 `Run_Info` 中可看到授权信息：
+   - `License_Status`
+   - `License_ID`
+   - `Licensed_To`
+   - `License_Expiry`
+6. 结果工作簿包含以下 sheet：
 
 - `Dashboard`
 - `Monthly_Trend`
@@ -204,10 +259,11 @@ run_optimizer.bat
 
 业务用户日常只需要：
 
-1. 更新输入目录内的 CSV / Excel 数据
-2. 打开控制工作簿调整参数
-3. 双击 `run_optimizer.bat` 或运行命令
-4. 打开输出结果 Excel
+1. 保持有效的 `license.json`
+2. 更新输入目录内的 CSV / Excel 数据
+3. 打开控制工作簿调整参数
+4. 双击 `run_optimizer.bat` 或运行命令
+5. 打开输出结果 Excel
 
 ---
 
@@ -221,7 +277,18 @@ run_optimizer.bat
 python create_template.py
 ```
 
-### 9.2 输入目录改了
+### 9.2 缺少授权文件
+
+如果是试用版，直接向 RSCP 索取 `trial / unbound` 的 `license.json`。  
+如果是正式版，执行：
+
+```powershell
+get_machine_fingerprint.bat
+```
+
+把生成的 `machine_fingerprint.json` 发给 RSCP，并把返回的 `license.json` 放到项目根目录。
+
+### 9.3 输入目录改了
 
 直接到 `Control_Panel` 中修改：
 
@@ -230,24 +297,25 @@ python create_template.py
 - `Input_Master_Folder`
 - `Output_Folder`
 
-### 9.3 运行时提示验证错误
+### 9.4 运行时提示验证错误
 
 先修正输入数据。  
 如果是演示或强制试跑，可将 `Skip_Validation_Errors` 改为 `Yes`。
 
-### 9.4 结果文件没有生成
+### 9.5 结果文件没有生成
 
 检查：
 
 - `Output_Folder` 是否存在
 - 当前用户是否有写权限
 - 控制工作簿中的 `Output_FileName` 是否合法
+- `license.json` 是否存在且未过期
 
 ---
 
 ## 10. 给 IT 的一句话版本
 
-安装 Python 和依赖，保留项目目录与控制工作簿，用户通过 Excel 填参数，再运行：
+安装 Python 和依赖，运行 `get_machine_fingerprint.bat` 申请授权，把 `license.json` 放到项目根目录，然后运行：
 
 ```powershell
 python main.py --input-template "Tooling Control Panel\Capacity_Optimizer_Control.xlsx"

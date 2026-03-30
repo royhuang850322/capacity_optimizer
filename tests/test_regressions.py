@@ -178,6 +178,24 @@ class RegressionTests(unittest.TestCase):
             workbook = load_workbook(template_path)
             self.assertIn("Deployment_Steps", workbook.sheetnames)
             self.assertEqual(workbook.active.title, "Deployment_Steps")
+            deployment_ws = workbook["Deployment_Steps"]
+            deployment_text = "\n".join(
+                str(cell.value)
+                for row in deployment_ws.iter_rows()
+                for cell in row
+                if cell.value
+            )
+            self.assertIn("license.json", deployment_text)
+            self.assertIn("get_machine_fingerprint.bat", deployment_text)
+            self.assertIn("unbound", deployment_text.lower())
+            instructions_text = "\n".join(
+                str(cell.value)
+                for row in workbook["Instructions"].iter_rows()
+                for cell in row
+                if cell.value
+            )
+            self.assertIn("license.json", instructions_text)
+            self.assertIn("unbound", instructions_text.lower())
             ws = workbook["Control_Panel"]
             row_by_parameter = {
                 ws[f"A{row_num}"].value: row_num

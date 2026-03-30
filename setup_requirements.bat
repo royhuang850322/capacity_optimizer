@@ -58,12 +58,16 @@ if errorlevel 1 goto :fail
 :verify
 echo.
 echo Verifying Python imports...
-call %PY_CMD% -c "import ortools, pandas, openpyxl, click, colorama; print('Dependency check: OK')"
+call %PY_CMD% -c "import ortools, pandas, openpyxl, click, colorama, cryptography; print('Dependency check: OK')"
 if errorlevel 1 goto :fail
 
 echo.
 echo Setup completed successfully.
-echo You can now open Capacity_Optimizer_Control.xlsx and run the tool.
+echo Next step:
+echo 1. If RSCP already provided a trial or unbound license, place license.json in the project root
+echo 2. Otherwise run get_machine_fingerprint.bat to create machine_fingerprint.json
+echo 3. Send machine_fingerprint.json to RSCP and place the returned license.json in the project root
+echo 4. Open Capacity_Optimizer_Control.xlsx and run the tool
 goto :end
 
 :fail

@@ -42,6 +42,11 @@ Thumbs.db
 # Local outputs
 output/
 tests/_tmp/
+license.json
+machine_fingerprint.json
+private_keys/
+license_admin/private_keys/
+license_admin/license_tools/__pycache__/
 
 # Local document files; remove this rule if you want to publish Word docs
 *.docx

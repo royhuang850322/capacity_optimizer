@@ -1,0 +1,85 @@
+"""
+Machine identity helpers for offline license binding.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import socket
+import sys
+from datetime import datetime
+from typing import Any
+
+if sys.platform == "win32":
+    import winreg
+else:  # pragma: no cover - tool is intended for Windows deployment
+    winreg = None
+
+
+MACHINE_GUID_REG_PATH = r"SOFTWARE\Microsoft\Cryptography"
+MACHINE_GUID_REG_VALUE = "MachineGuid"
+
+
+def get_machine_guid() -> str:
+    if sys.platform != "win32" or winreg is None:
+        raise RuntimeError("Machine fingerprint is only supported on Windows.")
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, MACHINE_GUID_REG_PATH) as key:
+            value, _value_type = winreg.QueryValueEx(key, MACHINE_GUID_REG_VALUE)
+    except OSError as exc:  # pragma: no cover - depends on local registry state
+        raise RuntimeError(
+            "Could not read Windows MachineGuid. Run the tool with permission to read "
+            r"HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid."
+        ) from exc
+
+    machine_guid = str(value or "").strip().lower()
+    if not machine_guid:
+        raise RuntimeError("Windows MachineGuid is empty.")
+    return machine_guid
+
+
+def get_machine_fingerprint() -> str:
+    machine_guid = get_machine_guid()
+    digest = hashlib.sha256(machine_guid.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
+
+
+def get_machine_label() -> str:
+    return os.environ.get("COMPUTERNAME") or socket.gethostname() or "UNKNOWN_MACHINE"
+
+
+def build_machine_identity_payload() -> dict[str, Any]:
+    return {
+        "product_name": "Chemical Capacity Optimizer",
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "machine_label": get_machine_label(),
+        "machine_fingerprint": get_machine_fingerprint(),
+    }
+
+
+def _main() -> int:
+    parser = argparse.ArgumentParser(description="Print or export the local machine fingerprint.")
+    parser.add_argument(
+        "--out",
+        help="Optional JSON output path. If omitted, prints the machine fingerprint to the console.",
+    )
+    args = parser.parse_args()
+
+    payload = build_machine_identity_payload()
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        print(f"Machine fingerprint written to: {args.out}")
+    else:
+        print("Chemical Capacity Optimizer - Machine Fingerprint")
+        print("------------------------------------------------")
+        print(f"Machine label      : {payload['machine_label']}")
+        print(f"Machine fingerprint: {payload['machine_fingerprint']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

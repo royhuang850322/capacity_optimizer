@@ -34,8 +34,17 @@ if not exist "%TEMPLATE%" (
 )
 
 echo Checking required Python packages...
-call %PY_CMD% -c "import ortools, pandas, openpyxl, click, colorama"
+call %PY_CMD% -c "import ortools, pandas, openpyxl, click, colorama, cryptography"
 if errorlevel 1 goto :deps_missing
+
+if not exist "%~dp0license.json" (
+    echo.
+    echo License file not found: %~dp0license.json
+    echo If you already have a trial or unbound license, copy license.json into the project root.
+    echo Otherwise run get_machine_fingerprint.bat, send machine_fingerprint.json to RSCP,
+    echo and place the returned machine-locked license.json in the project root.
+    goto :end
+)
 
 echo Running optimizer...
 call %PY_CMD% main.py --input-template "%TEMPLATE%"

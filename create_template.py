@@ -67,7 +67,7 @@ def _create_deployment_steps(worksheet) -> None:
     worksheet.column_dimensions["D"].width = 72
 
     worksheet.merge_cells("A1:D1")
-    worksheet["A1"] = "Deployment Steps - copy the tool, update paths, install Python packages, and run"
+    worksheet["A1"] = "Deployment Steps - copy the tool, install dependencies, activate the license, and run"
     worksheet["A1"].font = Font(color="FFFFFF", bold=True, size=13)
     worksheet["A1"].fill = HDR_FILL
     worksheet["A1"].alignment = Alignment(horizontal="center", vertical="center")
@@ -78,7 +78,7 @@ def _create_deployment_steps(worksheet) -> None:
     worksheet["A2"] = (
         "Recommended portable setup: keep Capacity_Optimizer_Control.xlsx inside 'Tooling Control Panel', "
         "then use Project_Root_Folder = '..', Input_Load_Folder = 'Data_Input', "
-        "Input_Master_Folder = 'Data_Input', and Output_Folder = 'output'. "
+        "Input_Master_Folder = 'Data_Input', Output_Folder = 'output', and place 'license.json' in the project root. "
         "中文说明见右侧列。"
     )
     worksheet["A2"].font = Font(color="7F6000", bold=True, size=10)
@@ -109,39 +109,57 @@ def _create_deployment_steps(worksheet) -> None:
         ),
         (
             "Step 4",
+            "Get the machine fingerprint",
+            "If RSCP already gave you a trial/unbound license, skip to Step 6. Otherwise double-click 'get_machine_fingerprint.bat' in the project root. It creates 'machine_fingerprint.json' for this computer.",
+            "如果 RSCP 已经直接给了试用版或 unbound 授权，可以跳到 Step 6。否则双击项目根目录里的 `get_machine_fingerprint.bat`，为当前电脑生成 `machine_fingerprint.json`。",
+        ),
+        (
+            "Step 5",
+            "Request the license file",
+            "For a machine-locked license, send 'machine_fingerprint.json' to RSCP and request the signed 'license.json' for this computer. For a short-term trial, RSCP can issue an unbound license directly.",
+            "如果要机绑授权，把 `machine_fingerprint.json` 发给 RSCP，并申请这台电脑专用的签名授权文件 `license.json`。如果只是短期试用，RSCP 也可以直接发 unbound 授权。",
+        ),
+        (
+            "Step 6",
+            "Place the license file",
+            "Copy the signed 'license.json' into the project root, next to main.py and run_optimizer.bat.",
+            "把签名后的 `license.json` 放到项目根目录，也就是和 `main.py`、`run_optimizer.bat` 同级的位置。",
+        ),
+        (
+            "Step 7",
             "Open the control workbook",
             "Open 'Tooling Control Panel\\Capacity_Optimizer_Control.xlsx'. Save the workbook after any edits, then go to the 'Control_Panel' sheet after reading this page.",
             "打开 `Tooling Control Panel\\Capacity_Optimizer_Control.xlsx`。每次修改后先保存，再切换到 `Control_Panel`。",
         ),
         (
-            "Step 5",
+            "Step 8",
             "Check migration settings",
             "In Control_Panel, first check Project_Root_Folder, Input_Load_Folder, Input_Master_Folder, and Output_Folder. If the workbook stays in 'Tooling Control Panel', keep '..', 'Data_Input', 'Data_Input', and 'output'.",
             "先检查 `Project_Root_Folder`、`Input_Load_Folder`、`Input_Master_Folder`、`Output_Folder`。如果 workbook 仍然放在 `Tooling Control Panel` 目录中，默认保持 `.. / Data_Input / Data_Input / output` 即可。",
         ),
         (
-            "Step 6",
+            "Step 9",
             "Check run settings",
             "Then review Scenario_Name, Start_Year, Start_Month_Num, Horizon_Months, Run_Mode, Verbose, and Skip_Validation_Errors.",
             "再检查运行参数，例如 `Scenario_Name`、起始年月、`Horizon_Months`、`Run_Mode`、`Verbose`、`Skip_Validation_Errors`。",
         ),
         (
-            "Step 7",
+            "Step 10",
             "Run the tool",
-            "Press Ctrl+S to save first. Then click 'Run Optimizer' in Control_Panel, or run: python main.py --input-template \"Tooling Control Panel/Capacity_Optimizer_Control.xlsx\". If required packages are missing, the run batch file will stop and ask you to run setup_requirements.bat first.",
-            "先按 `Ctrl+S` 保存，再在 `Control_Panel` 点击 `Run Optimizer`，或者在命令行运行：`python main.py --input-template \"Tooling Control Panel/Capacity_Optimizer_Control.xlsx\"`。如果依赖没装好，运行批处理会先停止并提示你运行 `setup_requirements.bat`。",
+            "Press Ctrl+S to save first. Then click 'Run Optimizer' in Control_Panel, or run: python main.py --input-template \"Tooling Control Panel/Capacity_Optimizer_Control.xlsx\". If required packages or license files are missing, the run batch file will stop and tell you what to do next.",
+            "先按 `Ctrl+S` 保存，再在 `Control_Panel` 点击 `Run Optimizer`，或者在命令行运行：`python main.py --input-template \"Tooling Control Panel/Capacity_Optimizer_Control.xlsx\"`。如果依赖或授权文件缺失，运行批处理会先停止并明确告诉你下一步该做什么。",
         ),
         (
-            "Step 8",
+            "Step 11",
             "Review output",
             "Open the 'output' folder and check the generated Excel reports. If Run_Mode = Both, the comparison workbook is also generated.",
             "打开 `output` 文件夹查看结果。如果 `Run_Mode = Both`，还会额外生成一份 ModeA 和 ModeB 的对比报告。",
         ),
         (
-            "Step 9",
+            "Step 12",
             "If the run fails",
-            "Check that the four migration settings point to valid folders, master_capacity.csv and planner files exist, and Python packages were installed successfully. If needed, run 'setup_requirements.bat' again.",
-            "如果运行失败，优先检查四个迁移路径是否正确，`master_capacity.csv` 和 planner 文件是否存在，以及依赖包是否安装成功。必要时重新运行 `setup_requirements.bat`。",
+            "Check that the four migration settings point to valid folders, master_capacity.csv and planner files exist, Python packages were installed successfully, and a valid 'license.json' is present in the project root. If needed, run 'setup_requirements.bat' again or regenerate 'machine_fingerprint.json'.",
+            "如果运行失败，优先检查四个迁移路径是否正确，`master_capacity.csv` 和 planner 文件是否存在，依赖包是否安装成功，以及项目根目录里是否放了有效的 `license.json`。必要时重新运行 `setup_requirements.bat` 或重新生成 `machine_fingerprint.json`。",
         ),
     ]
 
@@ -159,12 +177,13 @@ def _create_deployment_steps(worksheet) -> None:
             worksheet[f"{col}{row_num}"].border = BORDER
             worksheet[f"{col}{row_num}"].alignment = Alignment(wrap_text=True, vertical="top")
 
-    worksheet.merge_cells("A16:D16")
-    worksheet["A16"] = "Where to continue: open the 'Control_Panel' sheet and start with the Migration Setup section."
-    worksheet["A16"].font = Font(color="1F4E79", bold=True, size=10)
-    worksheet["A16"].fill = SUBHDR_FILL
-    worksheet["A16"].alignment = Alignment(horizontal="left", vertical="center")
-    worksheet["A16"].border = BORDER
+    footer_row = 5 + len(steps) + 2
+    worksheet.merge_cells(f"A{footer_row}:D{footer_row}")
+    worksheet[f"A{footer_row}"] = "Where to continue: open the 'Control_Panel' sheet and start with the Migration Setup section."
+    worksheet[f"A{footer_row}"].font = Font(color="1F4E79", bold=True, size=10)
+    worksheet[f"A{footer_row}"].fill = SUBHDR_FILL
+    worksheet[f"A{footer_row}"].alignment = Alignment(horizontal="left", vertical="center")
+    worksheet[f"A{footer_row}"].border = BORDER
     worksheet.freeze_panes = "A5"
 
 
@@ -173,11 +192,15 @@ def _create_instructions(worksheet) -> None:
     lines = [
         ("CHEMICAL CAPACITY OPTIMIZER - EXCEL WORKFLOW", True),
         ("", False),
-        ("1. Fill in the Control_Panel sheet.", False),
-        ("2. Planner and master data stay in CSV/Excel files on disk; the Python tool reads them directly.", False),
-        ("3. Run: python main.py --input-template \"Tooling Control Panel/Capacity_Optimizer_Control.xlsx\"", False),
+        ("1. Run setup_requirements.bat on a new computer.", False),
+        ("2. For a short trial, ask RSCP for an unbound trial license and place license.json in the project root.", False),
+        ("3. For a machine-locked license, run get_machine_fingerprint.bat and send machine_fingerprint.json to RSCP.", False),
+        ("4. Place the signed license.json in the project root.", False),
+        ("5. Fill in the Control_Panel sheet.", False),
+        ("6. Planner and master data stay in CSV/Excel files on disk; the Python tool reads them directly.", False),
+        ("7. Run: python main.py --input-template \"Tooling Control Panel/Capacity_Optimizer_Control.xlsx\"", False),
         ("   Or click the Run button inside Control_Panel.", False),
-        ("4. The tool writes one Excel result workbook per mode, with dashboard/report sheets included.", False),
+        ("8. The tool writes one Excel result workbook per mode, with dashboard/report sheets included.", False),
         ("", False),
         ("KEY SETTINGS", True),
         ("Project_Root_Folder: main project folder. Keep '..' when the workbook stays inside Tooling Control Panel.", False),
@@ -192,6 +215,12 @@ def _create_instructions(worksheet) -> None:
         ("Direct_Mode: keep 'Yes' for the folder-based CSV workflow.", False),
         ("Verbose: prints solver detail in the command window.", False),
         ("Skip_Validation_Errors: only use 'Yes' when you intentionally want a forced run.", False),
+        ("", False),
+        ("LICENSE", True),
+        ("license.json: required in the project root before the optimizer can run.", False),
+        ("Trial / unbound license: no machine fingerprint required; RSCP can issue it directly.", False),
+        ("get_machine_fingerprint.bat: creates machine_fingerprint.json for RSCP to issue a machine-locked license.", False),
+        ("Run_Info: each output workbook records license status, license ID, customer, expiry date, and binding mode.", False),
         ("", False),
         ("RESULT WORKBOOK CONTENT", True),
         ("Dashboard, Monthly_Trend, Bottleneck, WC_Heatmap, Product_Risk", False),
@@ -227,7 +256,8 @@ def _create_control_panel(worksheet, lists_ws) -> None:
     worksheet.merge_cells("A3:C3")
     worksheet["A3"] = (
         "Recommended portable setup: keep Project_Root_Folder = '..', "
-        "Input folders = 'Data_Input', and Output_Folder = 'output'. See 'Deployment_Steps' for the full setup checklist."
+        "Input folders = 'Data_Input', Output_Folder = 'output', and place 'license.json' in the project root. "
+        "See 'Deployment_Steps' for the full setup checklist."
     )
     worksheet["A3"].font = Font(color="7F6000", bold=True, size=10)
     worksheet["A3"].fill = MIGRATION_VAL_FILL
@@ -332,20 +362,32 @@ def _create_control_panel(worksheet, lists_ws) -> None:
         worksheet,
         top_left=f"B{current_row + 6}",
         bottom_right=f"C{current_row + 7}",
-        label="Run Optimizer",
-        target=r"..\run_optimizer.bat",
+        label="Get Machine Fingerprint",
+        target=r"..\get_machine_fingerprint.bat",
     )
     _add_action_button(
         worksheet,
         top_left=f"B{current_row + 9}",
         bottom_right=f"C{current_row + 10}",
+        label="Run Optimizer",
+        target=r"..\run_optimizer.bat",
+    )
+    _add_action_button(
+        worksheet,
+        top_left=f"B{current_row + 12}",
+        bottom_right=f"C{current_row + 13}",
         label="Open Output Folder",
         target=r"..\output",
     )
-    worksheet[f"A{current_row + 12}"] = "Button note"
-    worksheet[f"A{current_row + 12}"].font = Font(bold=True, color="1F4E79", size=11)
-    worksheet[f"B{current_row + 12}"] = "Run Setup Dependencies once on a new computer. Save the workbook first (Ctrl+S) before clicking Run Optimizer. If dependencies are missing, Run Optimizer will stop and remind you."
-    worksheet[f"B{current_row + 12}"].alignment = Alignment(wrap_text=True)
+    worksheet[f"A{current_row + 15}"] = "Button note"
+    worksheet[f"A{current_row + 15}"].font = Font(bold=True, color="1F4E79", size=11)
+    worksheet[f"B{current_row + 15}"] = (
+        "On a new computer, click Setup Dependencies first. If RSCP gave you a trial/unbound license, "
+        "place license.json in the project root and continue. Otherwise click Get Machine Fingerprint, "
+        "send machine_fingerprint.json to RSCP, place the returned license.json in the project root, "
+        "save the workbook (Ctrl+S), and click Run Optimizer."
+    )
+    worksheet[f"B{current_row + 15}"].alignment = Alignment(wrap_text=True)
 
     _add_list_validation(worksheet, f"B{value_rows['Run_Mode']}", lists_ws, "$A$2:$A$4")
     _add_list_validation(worksheet, f"B{value_rows['Direct_Mode']}", lists_ws, "$B$2:$B$3")

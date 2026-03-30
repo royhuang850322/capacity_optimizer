@@ -373,30 +373,35 @@ def _build_wc_load_frame(df_detail: pd.DataFrame, months: List[str]) -> pd.DataF
 
 
 def _build_run_info_df(config: Config, mode: str) -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            ("Scenario_Name", config.scenario_name),
-            ("Mode", mode),
-            ("Start_Month", config.start_month),
-            ("Horizon_Months", config.horizon_months),
-            ("Input_Load_Folder", config.input_load_folder),
-            ("Input_Master_Folder", config.input_master_folder),
-            ("Output_Folder", config.output_folder),
-            ("Project_Root_Folder", getattr(config, "project_root_folder", "")),
-            ("Output_FileName", config.output_file_name),
-            ("Run_Timestamp", config.run_timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-            ("Run_Mode", getattr(config, "run_mode", mode)),
-            ("Direct_Mode", "Yes" if getattr(config, "direct_mode", True) else "No"),
-            ("Verbose", "Yes" if getattr(config, "verbose", False) else "No"),
-            (
-                "Skip_Validation_Errors",
-                "Yes" if getattr(config, "skip_validation_errors", False) else "No",
-            ),
-            ("Notes", config.notes or ""),
-            ("Tool_Version", "1.0.1"),
-        ],
-        columns=["Parameter", "Value"],
-    )
+    rows = [
+        ("Scenario_Name", config.scenario_name),
+        ("Mode", mode),
+        ("Start_Month", config.start_month),
+        ("Horizon_Months", config.horizon_months),
+        ("Input_Load_Folder", config.input_load_folder),
+        ("Input_Master_Folder", config.input_master_folder),
+        ("Output_Folder", config.output_folder),
+        ("Project_Root_Folder", getattr(config, "project_root_folder", "")),
+        ("Output_FileName", config.output_file_name),
+        ("Run_Timestamp", config.run_timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        ("Run_Mode", getattr(config, "run_mode", mode)),
+        ("Direct_Mode", "Yes" if getattr(config, "direct_mode", True) else "No"),
+        ("Verbose", "Yes" if getattr(config, "verbose", False) else "No"),
+        (
+            "Skip_Validation_Errors",
+            "Yes" if getattr(config, "skip_validation_errors", False) else "No",
+        ),
+        ("License_Status", getattr(config, "license_status", "")),
+        ("License_ID", getattr(config, "license_id", "")),
+        ("License_Type", getattr(config, "license_type", "")),
+        ("Licensed_To", getattr(config, "licensed_to", "")),
+        ("License_Expiry", getattr(config, "license_expiry", "")),
+        ("License_Binding_Mode", getattr(config, "license_binding_mode", "")),
+        ("License_Machine_Label", getattr(config, "license_machine_label", "")),
+        ("Notes", config.notes or ""),
+        ("Tool_Version", "1.1.0"),
+    ]
+    return pd.DataFrame(rows, columns=["Parameter", "Value"])
 
 
 def _build_preview_metrics(
@@ -1417,6 +1422,13 @@ def _write_comparison_run_info(
             ("Output_Folder", config.output_folder),
             ("Project_Root_Folder", getattr(config, "project_root_folder", "")),
             ("Run_Timestamp", config.run_timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            ("License_Status", getattr(config, "license_status", "")),
+            ("License_ID", getattr(config, "license_id", "")),
+            ("License_Type", getattr(config, "license_type", "")),
+            ("Licensed_To", getattr(config, "licensed_to", "")),
+            ("License_Expiry", getattr(config, "license_expiry", "")),
+            ("License_Binding_Mode", getattr(config, "license_binding_mode", "")),
+            ("License_Machine_Label", getattr(config, "license_machine_label", "")),
             ("ModeA_Service_Level", metrics_by_mode["ModeA"]["service_level"] / 100.0),
             ("ModeB_Service_Level", metrics_by_mode["ModeB"]["service_level"] / 100.0),
         ],

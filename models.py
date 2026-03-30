@@ -22,6 +22,13 @@ class Config:
     verbose: bool = False
     skip_validation_errors: bool = False
     project_root_folder: str = ""
+    license_status: str = ""
+    license_id: Optional[str] = None
+    license_type: Optional[str] = None
+    licensed_to: Optional[str] = None
+    license_expiry: Optional[str] = None
+    license_binding_mode: Optional[str] = None
+    license_machine_label: Optional[str] = None
 
 
 @dataclass

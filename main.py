@@ -82,6 +82,14 @@ def main(
     except Exception as exc:
         _fatal(f"Could not read control workbook: {exc}")
 
+    try:
+        from license_validator import LicenseValidationError, validate_license
+    except ModuleNotFoundError as exc:
+        _fatal(
+            "Required Python packages are missing or incomplete.\n"
+            "Run setup_requirements.bat first, then try again."
+        )
+
     if output_name:
         config.output_file_name = output_name
 
@@ -93,6 +101,21 @@ def main(
         config.verbose = verbosity == "verbose"
     if validation_policy != "config":
         config.skip_validation_errors = validation_policy == "skip-errors"
+
+    try:
+        license_info = validate_license(config.project_root_folder)
+    except LicenseValidationError as exc:
+        _fatal(str(exc))
+    except Exception as exc:
+        _fatal(f"License validation failed unexpectedly: {exc}")
+
+    config.license_status = license_info.status
+    config.license_id = license_info.license_id
+    config.license_type = license_info.license_type
+    config.licensed_to = license_info.customer_name
+    config.license_expiry = license_info.expiry_date
+    config.license_binding_mode = license_info.binding_mode
+    config.license_machine_label = license_info.machine_label
 
     config.run_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     selected_scenario = _selected_scenario(config.scenario_name)
@@ -107,6 +130,10 @@ def main(
     click.echo(f"  Input master : {config.input_master_folder}")
     click.echo(f"  Output       : {config.output_folder}")
     click.echo(f"  Direct mode  : {'Yes' if config.direct_mode else 'No'}")
+    click.echo(f"  License      : {config.license_status}")
+    click.echo(f"  Licensed to  : {config.licensed_to}")
+    click.echo(f"  Expires      : {config.license_expiry}")
+    click.echo(f"  Binding      : {config.license_binding_mode}")
 
     if config.direct_mode:
         try:
@@ -409,7 +436,7 @@ def _selected_scenario(configured_scenario: str | None) -> str | None:
 
 def _banner() -> None:
     click.echo("=" * 60)
-    click.echo("  Chemical Capacity Optimizer  v1.0.1")
+    click.echo("  Chemical Capacity Optimizer  v1.1.0")
     click.echo("  Excel Control Workbook + Python Optimization + Excel Reports")
     click.echo("=" * 60)
 

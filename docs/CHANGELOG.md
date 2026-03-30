@@ -7,6 +7,27 @@ The format is based on a simple release log:
 - `Changed` for behavior or workflow updates
 - `Fixed` for bug fixes
 
+## [v1.1.0] - 2026-03-30
+
+Licensing and internal administration release for the Excel-first capacity optimizer.
+
+### Added
+- Offline license validation with signed `license.json`, expiry-date enforcement, and optional machine-locked authorization
+- Machine fingerprint collection flow for customer computers
+- Internal GUI license generator for issuing `trial / unbound` and `machine_locked` licenses without typing long PowerShell commands
+- Managed internal license repository structure under `D:\RSCP_License_Admin\<CustomerName>\capacity_optimizer\...`
+- License status fields written into result workbook `Run_Info`
+
+### Changed
+- Internal license tooling moved under `license_admin/`
+- Project operations documents moved under `docs/`
+- Readme and internal SOPs now point to the reorganized paths
+- Tool version string updated to `v1.1.0`
+
+### Fixed
+- Dependency bootstrap and run scripts now align with the current Excel-first + license-controlled workflow
+- Internal license generation defaults now point to the managed private-key and admin-repository paths
+
 ## [v1.0.1] - 2026-03-29
 
 Planner-traceability release for the Excel-first capacity optimizer.
