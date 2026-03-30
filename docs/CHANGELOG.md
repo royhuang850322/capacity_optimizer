@@ -7,6 +7,20 @@ The format is based on a simple release log:
 - `Changed` for behavior or workflow updates
 - `Fixed` for bug fixes
 
+## [v1.1.2] - 2026-03-30
+
+Documentation and packaging polish release for the Excel-first capacity optimizer.
+
+### Added
+- Formatted Word user manual generator for rebuilding the customer/internal handbook from Markdown
+
+### Changed
+- Published the formatted Word user manual in the repository root
+- Tool version string updated to `v1.1.2`
+
+### Fixed
+- Improved Word manual formatting so heading hierarchy, lists, and code blocks render more cleanly
+
 ## [v1.1.1] - 2026-03-30
 
 Customer-delivery tooling and documentation release for the Excel-first capacity optimizer.

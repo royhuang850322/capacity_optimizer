@@ -436,7 +436,7 @@ def _selected_scenario(configured_scenario: str | None) -> str | None:
 
 def _banner() -> None:
     click.echo("=" * 60)
-    click.echo("  Chemical Capacity Optimizer  v1.1.1")
+    click.echo("  Chemical Capacity Optimizer  v1.1.2")
     click.echo("  Excel Control Workbook + Python Optimization + Excel Reports")
     click.echo("=" * 60)
 
