@@ -17,7 +17,7 @@
 
 1. 打开 `Tooling Control Panel\Capacity_Optimizer_Control.xlsx`
 2. 在 `Control_Panel` 中设置输入路径、输出路径、Scenario、起始年月、Horizon、Run Mode 等参数
-3. 双击 `run_optimizer.bat` 或执行 Python 命令运行
+3. 双击 `runtime\run_optimizer.bat` 或执行 Python 命令运行
 4. 在 `output\` 中查看结果 Excel
 
 如果 `Run_Mode = Both`，还会额外生成：
@@ -58,16 +58,19 @@ C:\Apps\capacity_optimizer
 - 用户最终使用的控制工作簿路径
 - 客户对应的 `license.json`
 
-至少确认这些文件存在：
+至少确认这些内容存在：
 
-- `main.py`
-- `create_template.py`
+- `app\main.py`
+- `app\create_template.py`
 - `requirements.txt`
-- `setup_requirements.bat`
-- `get_machine_fingerprint.bat`
-- `run_optimizer.bat`
-- `license.json`
+- `runtime\setup_requirements.bat`
+- `runtime\get_machine_fingerprint.bat`
+- `runtime\run_optimizer.bat`
 - `Tooling Control Panel\Capacity_Optimizer_Control.xlsx`
+
+推荐授权位置：
+
+- `licenses\active\license.json`
 
 ---
 
@@ -101,7 +104,7 @@ python -m venv .venv
 ### 5.4 安装依赖
 
 ```powershell
-setup_requirements.bat
+runtime\setup_requirements.bat
 ```
 
 ### 5.5 生成控制工作簿
@@ -109,7 +112,7 @@ setup_requirements.bat
 如果项目里还没有最新控制工作簿，执行：
 
 ```powershell
-python create_template.py
+python -m app.create_template
 ```
 
 生成文件：
@@ -135,24 +138,29 @@ Tooling Control Panel\Capacity_Optimizer_Control.xlsx
 如果要给这台电脑发正式授权，先执行：
 
 ```powershell
-get_machine_fingerprint.bat
+runtime\get_machine_fingerprint.bat
 ```
 
-它会生成：
+它会在下面目录生成带时间戳的请求文件：
 
 ```text
-machine_fingerprint.json
+licenses\requests\
 ```
 
 把这个文件发给 RSCP，换取当前电脑专用的 `license.json`。
 
 ### 5.8 放置授权文件
 
-把 RSCP 返回的 `license.json` 放到项目根目录，也就是和这些文件同级：
+把 RSCP 返回的 `license.json` 放到：
 
-- `main.py`
-- `setup_requirements.bat`
-- `run_optimizer.bat`
+```text
+licenses\active\license.json
+```
+
+兼容说明：
+
+- 当前程序仍兼容旧的项目根目录 `license.json`
+- 但 IT 部署时建议统一使用 `licenses\active\license.json`
 
 ---
 
@@ -192,7 +200,7 @@ Tooling Control Panel\Capacity_Optimizer_Control.xlsx
 ### 6.2 命令行运行
 
 ```powershell
-python main.py --input-template "Tooling Control Panel\Capacity_Optimizer_Control.xlsx"
+python -m app.main --input-template "Tooling Control Panel\Capacity_Optimizer_Control.xlsx"
 ```
 
 ### 6.3 批处理运行
@@ -200,23 +208,23 @@ python main.py --input-template "Tooling Control Panel\Capacity_Optimizer_Contro
 也可以直接双击：
 
 ```text
-run_optimizer.bat
+runtime\run_optimizer.bat
 ```
 
 它会：
 
 1. 查找 `Tooling Control Panel\Capacity_Optimizer_Control.xlsx`
-2. 检查依赖和 `license.json`
+2. 检查依赖和授权文件
 3. 运行优化
 4. 成功后打开 `output\` 目录
 
-如果缺少授权文件，先运行：
+如果缺少正式授权文件，先运行：
 
 ```powershell
-get_machine_fingerprint.bat
+runtime\get_machine_fingerprint.bat
 ```
 
-把生成的 `machine_fingerprint.json` 发给 RSCP，再把返回的 `license.json` 放回项目根目录。
+把 `licenses\requests\` 下生成的机器指纹文件发给 RSCP，再把返回的 `license.json` 放到 `licenses\active\license.json`。
 
 ---
 
@@ -225,8 +233,8 @@ get_machine_fingerprint.bat
 以下内容同时满足，即视为部署完成：
 
 1. 可以打开 `Tooling Control Panel\Capacity_Optimizer_Control.xlsx`
-2. 项目根目录里存在有效的 `license.json`
-3. 可以成功运行 `python main.py --input-template "...Control.xlsx"`
+2. `licenses\active\license.json` 或兼容根目录 `license.json` 存在且有效
+3. 可以成功运行 `python -m app.main --input-template "...Control.xlsx"`
 4. `output\` 目录中能生成结果工作簿
 5. 结果工作簿 `Run_Info` 中可看到授权信息：
    - `License_Status`
@@ -262,7 +270,7 @@ get_machine_fingerprint.bat
 1. 保持有效的 `license.json`
 2. 更新输入目录内的 CSV / Excel 数据
 3. 打开控制工作簿调整参数
-4. 双击 `run_optimizer.bat` 或运行命令
+4. 双击 `runtime\run_optimizer.bat` 或运行命令
 5. 打开输出结果 Excel
 
 ---
@@ -274,7 +282,7 @@ get_machine_fingerprint.bat
 执行：
 
 ```powershell
-python create_template.py
+python -m app.create_template
 ```
 
 ### 9.2 缺少授权文件
@@ -283,10 +291,10 @@ python create_template.py
 如果是正式版，执行：
 
 ```powershell
-get_machine_fingerprint.bat
+runtime\get_machine_fingerprint.bat
 ```
 
-把生成的 `machine_fingerprint.json` 发给 RSCP，并把返回的 `license.json` 放到项目根目录。
+把 `licenses\requests\` 下生成的机器指纹文件发给 RSCP，并把返回的 `license.json` 放到 `licenses\active\license.json`。
 
 ### 9.3 输入目录改了
 
@@ -315,10 +323,10 @@ get_machine_fingerprint.bat
 
 ## 10. 给 IT 的一句话版本
 
-安装 Python 和依赖，运行 `get_machine_fingerprint.bat` 申请授权，把 `license.json` 放到项目根目录，然后运行：
+安装 Python 和依赖，运行 `runtime\get_machine_fingerprint.bat` 申请授权，把 `license.json` 放到 `licenses\active\license.json`，然后运行：
 
 ```powershell
-python main.py --input-template "Tooling Control Panel\Capacity_Optimizer_Control.xlsx"
+python -m app.main --input-template "Tooling Control Panel\Capacity_Optimizer_Control.xlsx"
 ```
 
 结果会输出到控制工作簿指定的 `Output_Folder` 中。

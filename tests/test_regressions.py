@@ -7,14 +7,14 @@ import pandas as pd
 from click.testing import CliRunner
 from openpyxl import load_workbook
 
-from data_loader import _aggregate_load_records, _parse_load_df, load_direct_mode_a
-from create_template import main as create_template_main
-from data_loader import load_config
-from main import _validate_direct_mode_setup
-from models import AllocationResult, Config, LoadRecord
-from optimizer import _build_demand
-from output_writer import write_mode_comparison_summary, write_results
-from validator import ValidationIssue, format_issue_report, validate
+from app.data_loader import _aggregate_load_records, _parse_load_df, load_direct_mode_a
+from app.create_template import main as create_template_main
+from app.data_loader import load_config
+from app.main import _validate_direct_mode_setup
+from app.models import AllocationResult, Config, LoadRecord
+from app.optimizer import _build_demand
+from app.output_writer import write_mode_comparison_summary, write_results
+from app.validator import ValidationIssue, format_issue_report, validate
 
 
 TEST_TMP_ROOT = os.path.join(os.path.dirname(__file__), "_tmp")
@@ -186,7 +186,7 @@ class RegressionTests(unittest.TestCase):
                 if cell.value
             )
             self.assertIn("license.json", deployment_text)
-            self.assertIn("get_machine_fingerprint.bat", deployment_text)
+            self.assertIn(r"runtime\get_machine_fingerprint.bat", deployment_text)
             self.assertIn("unbound", deployment_text.lower())
             instructions_text = "\n".join(
                 str(cell.value)
@@ -196,6 +196,8 @@ class RegressionTests(unittest.TestCase):
             )
             self.assertIn("license.json", instructions_text)
             self.assertIn("unbound", instructions_text.lower())
+            self.assertIn(r"runtime\setup_requirements.bat", instructions_text)
+            self.assertIn("python -m app.main", instructions_text)
             ws = workbook["Control_Panel"]
             row_by_parameter = {
                 ws[f"A{row_num}"].value: row_num

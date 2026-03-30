@@ -16,7 +16,7 @@ from typing import List, Tuple
 
 import pandas as pd
 
-from models import Config, LoadRecord, CapacityRecord, RoutingRecord
+from app.models import Config, LoadRecord, CapacityRecord, RoutingRecord
 
 
 PLANNER_FILE_RE = re.compile(r"^planner([1-6])_load\.(xlsx|xls|csv)$", re.IGNORECASE)

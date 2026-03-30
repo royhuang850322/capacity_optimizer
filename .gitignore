@@ -41,7 +41,9 @@ Thumbs.db
 
 # Local outputs
 output/
+delivery_packages/
 tests/_tmp/
+licenses/
 license.json
 machine_fingerprint.json
 private_keys/
@@ -50,3 +52,4 @@ license_admin/license_tools/__pycache__/
 
 # Local document files; remove this rule if you want to publish Word docs
 *.docx
+!Capacity_Optimizer_User_Manual_CN.docx

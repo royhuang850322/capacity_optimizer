@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import socket
 import sys
 from datetime import datetime
@@ -51,6 +52,11 @@ def get_machine_label() -> str:
     return os.environ.get("COMPUTERNAME") or socket.gethostname() or "UNKNOWN_MACHINE"
 
 
+def sanitize_machine_label(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip())
+    return cleaned or "UNKNOWN_MACHINE"
+
+
 def build_machine_identity_payload() -> dict[str, Any]:
     return {
         "product_name": "Chemical Capacity Optimizer",
@@ -66,13 +72,25 @@ def _main() -> int:
         "--out",
         help="Optional JSON output path. If omitted, prints the machine fingerprint to the console.",
     )
+    parser.add_argument(
+        "--out-dir",
+        help="Optional output directory. Writes a timestamped machine_fingerprint_*.json file there.",
+    )
     args = parser.parse_args()
 
     payload = build_machine_identity_payload()
-    if args.out:
-        with open(args.out, "w", encoding="utf-8") as handle:
+    if args.out and args.out_dir:
+        raise SystemExit("Use either --out or --out-dir, not both.")
+    if args.out or args.out_dir:
+        output_path = args.out
+        if args.out_dir:
+            os.makedirs(args.out_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"machine_fingerprint_{sanitize_machine_label(payload['machine_label'])}_{timestamp}.json"
+            output_path = os.path.join(args.out_dir, filename)
+        with open(output_path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
-        print(f"Machine fingerprint written to: {args.out}")
+        print(f"Machine fingerprint written to: {output_path}")
     else:
         print("Chemical Capacity Optimizer - Machine Fingerprint")
         print("------------------------------------------------")

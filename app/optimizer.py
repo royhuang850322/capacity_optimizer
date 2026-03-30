@@ -19,7 +19,7 @@ from typing import Dict, List, Set, Tuple
 
 from ortools.linear_solver import pywraplp
 
-from models import AllocationResult, CapacityRecord, LoadRecord, RoutingRecord
+from app.models import AllocationResult, CapacityRecord, LoadRecord, RoutingRecord
 
 
 BIG_M = 1_000_000.0

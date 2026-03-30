@@ -13,7 +13,7 @@ ModeB:
 from collections import defaultdict
 from typing import Dict, List, Set, Tuple
 
-from models import CapacityRecord, LoadRecord, RoutingRecord, ValidationIssue
+from app.models import CapacityRecord, LoadRecord, RoutingRecord, ValidationIssue
 
 
 def validate(

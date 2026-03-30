@@ -7,6 +7,24 @@ The format is based on a simple release log:
 - `Changed` for behavior or workflow updates
 - `Fixed` for bug fixes
 
+## [v1.1.1] - 2026-03-30
+
+Customer-delivery tooling and documentation release for the Excel-first capacity optimizer.
+
+### Added
+- Internal GUI delivery-package exporter with a one-click batch launcher
+- Clean customer package export flow that copies only runtime files and can optionally include a signed license
+- Root-level Word user manual covering customer-side and developer-side operations
+
+### Changed
+- Delivery package export is now available from both CLI and GUI workflows
+- Delivery-package SOP and internal license SOP now point to the GUI exporter entry
+- Tool version string updated to `v1.1.1`
+
+### Fixed
+- Reduced manual command-line steps for internal delivery preparation
+- Added regression coverage for the delivery exporter GUI path setup
+
 ## [v1.1.0] - 2026-03-30
 
 Licensing and internal administration release for the Excel-first capacity optimizer.

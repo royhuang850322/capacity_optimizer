@@ -21,8 +21,8 @@ from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from models import AllocationResult, Config, LoadRecord, ValidationIssue
-from result_analysis import (
+from app.models import AllocationResult, Config, LoadRecord, ValidationIssue
+from app.result_analysis import (
     build_executive_insights,
     build_mode_comparison_frame,
     build_result_analysis,
@@ -399,7 +399,7 @@ def _build_run_info_df(config: Config, mode: str) -> pd.DataFrame:
         ("License_Binding_Mode", getattr(config, "license_binding_mode", "")),
         ("License_Machine_Label", getattr(config, "license_machine_label", "")),
         ("Notes", config.notes or ""),
-        ("Tool_Version", "1.1.0"),
+        ("Tool_Version", "1.1.1"),
     ]
     return pd.DataFrame(rows, columns=["Parameter", "Value"])
 

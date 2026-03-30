@@ -18,7 +18,9 @@
 
 内部日常推荐入口：
 
-- [open_license_generator.bat](/C:/Users/super/capacity_optimizer/open_license_generator.bat)
+- [open_license_generator.bat](/C:/Users/super/capacity_optimizer/license_admin/open_license_generator.bat)
+- [客户交付包导出 SOP](/C:/Users/super/capacity_optimizer/docs/DELIVERY_PACKAGE_SOP_CN.md)
+- [open_delivery_exporter.bat](/C:/Users/super/capacity_optimizer/license_admin/open_delivery_exporter.bat)
 
 双击后会打开本地 GUI 表单，可以直接填写参数并生成 `license.json`。命令行脚本仍然保留，用于备用或批量处理。
 
@@ -103,7 +105,7 @@ D:\RSCP_License_Admin\<CustomerName>\capacity_optimizer\
 
 如果你不想手敲命令，优先使用：
 
-- [open_license_generator.bat](/C:/Users/super/capacity_optimizer/open_license_generator.bat)
+- [open_license_generator.bat](/C:/Users/super/capacity_optimizer/license_admin/open_license_generator.bat)
 
 示例命令：
 
@@ -122,8 +124,8 @@ python license_admin\license_tools\generate_trial_license.py `
 告诉客户：
 
 1. 复制整个工具文件夹
-2. 运行 `setup_requirements.bat`
-3. 把 `license.json` 放到项目根目录
+2. 运行 `runtime\setup_requirements.bat`
+3. 把 `license.json` 放到 `licenses\active\license.json`
 4. 运行工具
 
 ---
@@ -135,13 +137,13 @@ python license_admin\license_tools\generate_trial_license.py `
 客户需要先在目标电脑上运行：
 
 ```text
-get_machine_fingerprint.bat
+runtime\get_machine_fingerprint.bat
 ```
 
 然后把生成的：
 
 ```text
-machine_fingerprint.json
+licenses\requests\machine_fingerprint_*.json
 ```
 
 发回 RSCP。
@@ -161,7 +163,7 @@ machine_fingerprint.json
 
 如果你使用 GUI：
 
-1. 双击 `open_license_generator.bat`
+1. 双击 `license_admin\open_license_generator.bat`
 2. 选择 `Manual / Custom`
 3. 选择 `binding_mode = machine_locked`
 4. 填入客户信息和日期
@@ -196,8 +198,8 @@ python license_admin\license_tools\generate_license.py `
 
 告诉客户：
 
-1. 把 `license.json` 放到项目根目录
-2. 运行 `run_optimizer.bat`
+1. 把 `license.json` 放到 `licenses\active\license.json`
+2. 运行 `runtime\run_optimizer.bat`
 
 ---
 
@@ -215,8 +217,8 @@ python license_admin\license_tools\generate_license.py `
 
 ### 5.2 客户需要做的事
 
-1. 运行 `get_machine_fingerprint.bat`
-2. 把 `machine_fingerprint.json` 发给 RSCP
+1. 运行 `runtime\get_machine_fingerprint.bat`
+2. 把 `licenses\requests\` 下生成的机器指纹文件发给 RSCP
 
 ### 5.3 RSCP 内部要做的事
 
@@ -225,7 +227,7 @@ python license_admin\license_tools\generate_license.py `
 
 ### 5.4 客户最终动作
 
-1. 用新的正式版 `license.json` 替换旧的试用版 `license.json`
+1. 用新的正式版 `license.json` 替换 `licenses\active\license.json`
 2. 重新运行工具
 
 注意：
@@ -285,9 +287,9 @@ python license_admin\license_tools\generate_license.py `
 ### 7.2 客户要做的事
 
 1. 在新电脑复制工具文件夹
-2. 运行 `setup_requirements.bat`
-3. 运行 `get_machine_fingerprint.bat`
-4. 把新的 `machine_fingerprint.json` 发给 RSCP
+2. 运行 `runtime\setup_requirements.bat`
+3. 运行 `runtime\get_machine_fingerprint.bat`
+4. 把新的 `licenses\requests\` 里的机器指纹文件发给 RSCP
 
 ### 7.3 RSCP 内部要做的事
 

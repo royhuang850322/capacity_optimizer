@@ -16,7 +16,7 @@ This project now uses an Excel-first workflow:
 ### 1. 安装依赖
 
 ```bash
-setup_requirements.bat
+runtime\setup_requirements.bat
 ```
 
 ### 2. 生成机器指纹并申请授权
@@ -24,13 +24,13 @@ setup_requirements.bat
 如果你准备发的是正式机绑版，新电脑第一次使用前先运行：
 
 ```bash
-get_machine_fingerprint.bat
+runtime\get_machine_fingerprint.bat
 ```
 
-它会在项目根目录生成：
+它会在 `licenses\requests\` 下生成带时间戳的文件：
 
 ```text
-machine_fingerprint.json
+machine_fingerprint_<MachineLabel>_YYYYMMDD_HHMMSS.json
 ```
 
 把这个文件发给 `RSCP`，拿到签名后的：
@@ -39,19 +39,28 @@ machine_fingerprint.json
 license.json
 ```
 
-然后把 `license.json` 放到项目根目录，也就是和 `main.py`、`run_optimizer.bat` 同级的位置。
+然后把 `license.json` 放到推荐位置：
+
+```text
+licenses\active\license.json
+```
+
+兼容说明：
+
+- 旧版本仍可读取项目根目录下的 `license.json`
+- 但当前推荐统一使用 `licenses\active\license.json`
 
 如果你准备发的是短期试用版，也可以跳过机器指纹这一步，直接由 `RSCP` 签发一个：
 
 - `trial`
 - `unbound`
 
-的 `license.json`，然后直接放到项目根目录。
+的 `license.json`，然后直接放到 `licenses\active\license.json`。
 
 ### 3. 生成或刷新控制工作簿
 
 ```bash
-python create_template.py
+python -m app.create_template
 ```
 
 生成文件：
@@ -90,45 +99,45 @@ Tooling Control Panel/Capacity_Optimizer_Control.xlsx
 命令行方式：
 
 ```bash
-python main.py --input-template "Tooling Control Panel/Capacity_Optimizer_Control.xlsx"
+python -m app.main --input-template "Tooling Control Panel/Capacity_Optimizer_Control.xlsx"
 ```
 
 也可以直接双击：
 
-[`run_optimizer.bat`](/C:/Users/super/capacity_optimizer/run_optimizer.bat)
+[`run_optimizer.bat`](/C:/Users/super/capacity_optimizer/runtime/run_optimizer.bat)
 
 它会按 `Tooling Control Panel/Capacity_Optimizer_Control.xlsx` 运行，并在成功后打开 `output/` 文件夹。
 
 ## English Quick Start
 
 ```bash
-setup_requirements.bat
-get_machine_fingerprint.bat
-python create_template.py
-python main.py --input-template "Tooling Control Panel/Capacity_Optimizer_Control.xlsx"
+runtime\setup_requirements.bat
+runtime\get_machine_fingerprint.bat
+python -m app.create_template
+python -m app.main --input-template "Tooling Control Panel/Capacity_Optimizer_Control.xlsx"
 ```
 
-Before running, place a valid `license.json` in the project root and edit the `Control_Panel` sheet in `Tooling Control Panel/Capacity_Optimizer_Control.xlsx`.
+Before running, place a valid `license.json` in `licenses\active\license.json` and edit the `Control_Panel` sheet in `Tooling Control Panel/Capacity_Optimizer_Control.xlsx`.
 
 ## License Workflow
 
 ### Trial / Unbound
 
 - RSCP generates a short-term unbound `license.json`
-- Copy `license.json` into the project root
+- Copy `license.json` into `licenses\active\license.json`
 - Run the optimizer
 
 ### Machine-Locked
 
-- Run `get_machine_fingerprint.bat` on the target computer
-- Send `machine_fingerprint.json` to `RSCP`
+- Run `runtime\get_machine_fingerprint.bat` on the target computer
+- Send the generated file from `licenses\requests\` to `RSCP`
 - Receive the signed `license.json`
-- Copy `license.json` into the project root
+- Copy `license.json` into `licenses\active\license.json`
 - Run the optimizer
 
 The optimizer stops immediately when:
 
-- `license.json` is missing
+- both `licenses\active\license.json` and the legacy project-root `license.json` are missing
 - the license signature is invalid
 - the license has expired
 - the machine fingerprint does not match the licensed computer
@@ -263,21 +272,21 @@ Main file:
 
 Generator:
 
-- [create_template.py](/C:/Users/super/capacity_optimizer/create_template.py)
+- [create_template.py](/C:/Users/super/capacity_optimizer/app/create_template.py)
 
 Runner:
 
-- [main.py](/C:/Users/super/capacity_optimizer/main.py)
+- [main.py](/C:/Users/super/capacity_optimizer/app/main.py)
 
 License helper:
 
-- [get_machine_fingerprint.bat](/C:/Users/super/capacity_optimizer/get_machine_fingerprint.bat)
+- [get_machine_fingerprint.bat](/C:/Users/super/capacity_optimizer/runtime/get_machine_fingerprint.bat)
 
 Internal signing helpers:
 
 - [generate_license.py](/C:/Users/super/capacity_optimizer/license_admin/license_tools/generate_license.py)
 - [generate_trial_license.py](/C:/Users/super/capacity_optimizer/license_admin/license_tools/generate_trial_license.py)
-- [open_license_generator.bat](/C:/Users/super/capacity_optimizer/open_license_generator.bat)
+- [open_license_generator.bat](/C:/Users/super/capacity_optimizer/license_admin/open_license_generator.bat)
 - [license_generator_ui.py](/C:/Users/super/capacity_optimizer/license_admin/license_tools/license_generator_ui.py)
 - [license_tools README](/C:/Users/super/capacity_optimizer/license_admin/license_tools/README.md)
 
@@ -285,37 +294,48 @@ License operation guides:
 
 - [客户授权使用说明](/C:/Users/super/capacity_optimizer/docs/CUSTOMER_LICENSE_QUICKSTART_CN.md)
 - [内部 License 发放 SOP](/C:/Users/super/capacity_optimizer/docs/INTERNAL_LICENSE_SOP_CN.md)
+- [客户交付包导出 SOP](/C:/Users/super/capacity_optimizer/docs/DELIVERY_PACKAGE_SOP_CN.md)
 
 ## Repository Structure
 
 ```text
 .
-|-- main.py
-|-- data_loader.py
-|-- optimizer.py
-|-- validator.py
-|-- output_writer.py
-|-- result_analysis.py
-|-- create_template.py
-|-- create_sample_data.py
-|-- get_machine_fingerprint.bat
-|-- license_validator.py
-|-- machine_fingerprint.py
 |-- Data_Input/
 |-- Tooling Control Panel/
 |   `-- Capacity_Optimizer_Control.xlsx
 |-- output/
+|-- licenses/
+|   |-- active/
+|   `-- requests/
+|-- app/
+|   |-- main.py
+|   |-- data_loader.py
+|   |-- optimizer.py
+|   |-- validator.py
+|   |-- output_writer.py
+|   |-- result_analysis.py
+|   |-- create_template.py
+|   |-- create_sample_data.py
+|   |-- license_validator.py
+|   `-- machine_fingerprint.py
+|-- runtime/
+|   |-- setup_requirements.bat
+|   |-- get_machine_fingerprint.bat
+|   `-- run_optimizer.bat
 |-- docs/
 |   |-- CHANGELOG.md
 |   |-- CUSTOMER_LICENSE_QUICKSTART_CN.md
 |   |-- INTERNAL_LICENSE_SOP_CN.md
 |   `-- IT_DEPLOYMENT_CHECKLIST_CN.md
 |-- license_admin/
+|   |-- open_license_generator.bat
 |   |-- license_tools/
 |   `-- private_keys/
 |-- tests/
 |   `-- test_regressions.py
-`-- run_optimizer.bat
+|-- README.md
+|-- requirements.txt
+`-- LICENSE
 ```
 
 ## Sample Data
@@ -327,7 +347,7 @@ The repository includes demonstration input data under:
 You can regenerate the sample data with:
 
 ```bash
-python create_sample_data.py
+python -m app.create_sample_data
 ```
 
 Data dictionary:
@@ -346,9 +366,33 @@ For Windows workstation / shared-folder deployment, use:
 
 - [IT_DEPLOYMENT_CHECKLIST_CN.md](/C:/Users/super/capacity_optimizer/docs/IT_DEPLOYMENT_CHECKLIST_CN.md)
 
+## Internal Delivery Packaging
+
+Internal export helper:
+
+- [export_customer_package.py](/C:/Users/super/capacity_optimizer/license_admin/export_customer_package.py)
+- [open_delivery_exporter.bat](/C:/Users/super/capacity_optimizer/license_admin/open_delivery_exporter.bat)
+- [delivery_exporter_ui.py](/C:/Users/super/capacity_optimizer/license_admin/delivery_exporter_ui.py)
+
+Example:
+
+```bash
+python license_admin\export_customer_package.py --customer-name "DuPont" --overwrite
+```
+
+GUI entry:
+
+```bash
+license_admin\open_delivery_exporter.bat
+```
+
 ## Changelog
 
 - [CHANGELOG.md](/C:/Users/super/capacity_optimizer/docs/CHANGELOG.md)
+
+## User Manual
+
+- [Capacity_Optimizer_User_Manual_CN.docx](/C:/Users/super/capacity_optimizer/Capacity_Optimizer_User_Manual_CN.docx)
 
 ## License
 

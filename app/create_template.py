@@ -12,7 +12,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
-from data_loader import discover_planner_scenarios
+from app.data_loader import discover_planner_scenarios
 
 
 HDR_FILL = PatternFill("solid", fgColor="1F4E79")
@@ -28,7 +28,7 @@ BTN_FONT = Font(color="FFFFFF", bold=True, size=11)
 THIN = Side(style="thin", color="B0B0B0")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
-ROOT_DIR = os.path.dirname(__file__)
+ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
 DEFAULT_LOAD_DIR = os.path.join(ROOT_DIR, "Data_Input")
 DEFAULT_OUT = os.path.join(ROOT_DIR, "Tooling Control Panel", "Capacity_Optimizer_Control.xlsx")
 DEFAULT_PROJECT_ROOT = ".."
@@ -37,13 +37,19 @@ DEFAULT_PROJECT_ROOT = ".."
 @click.command()
 @click.option("--out", default=DEFAULT_OUT, show_default=True, help="Output path for the control workbook.")
 def main(out: str) -> None:
+    write_control_workbook(out)
+    click.echo(f"Control workbook written to {out}")
+
+
+def write_control_workbook(out: str, load_dir: str | None = None) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    scenario_options = _scenario_options(load_dir or DEFAULT_LOAD_DIR)
 
     workbook = Workbook()
     workbook.remove(workbook.active)
 
     lists_ws = workbook.create_sheet("Lists")
-    _create_lists(lists_ws)
+    _create_lists(lists_ws, scenario_options)
 
     deployment_ws = workbook.create_sheet("Deployment_Steps")
     _create_deployment_steps(deployment_ws)
@@ -52,12 +58,11 @@ def main(out: str) -> None:
     _create_instructions(instructions_ws)
 
     control_ws = workbook.create_sheet("Control_Panel")
-    _create_control_panel(control_ws, lists_ws)
+    _create_control_panel(control_ws, lists_ws, scenario_options)
 
     lists_ws.sheet_state = "hidden"
     workbook.active = workbook.index(deployment_ws)
     workbook.save(out)
-    click.echo(f"Control workbook written to {out}")
 
 
 def _create_deployment_steps(worksheet) -> None:
@@ -78,7 +83,7 @@ def _create_deployment_steps(worksheet) -> None:
     worksheet["A2"] = (
         "Recommended portable setup: keep Capacity_Optimizer_Control.xlsx inside 'Tooling Control Panel', "
         "then use Project_Root_Folder = '..', Input_Load_Folder = 'Data_Input', "
-        "Input_Master_Folder = 'Data_Input', Output_Folder = 'output', and place 'license.json' in the project root. "
+        "Input_Master_Folder = 'Data_Input', Output_Folder = 'output', and place 'license.json' in 'licenses\\active\\'. "
         "中文说明见右侧列。"
     )
     worksheet["A2"].font = Font(color="7F6000", bold=True, size=10)
@@ -104,26 +109,26 @@ def _create_deployment_steps(worksheet) -> None:
         (
             "Step 3",
             "Run the setup batch file",
-            "Double-click 'setup_requirements.bat' in the project root to install the required Python packages automatically.",
-            "双击项目根目录里的 `setup_requirements.bat`，自动安装所需 Python 依赖。",
+            "Double-click 'runtime\\setup_requirements.bat' to install the required Python packages automatically.",
+            "双击 `runtime\\setup_requirements.bat`，自动安装所需 Python 依赖。",
         ),
         (
             "Step 4",
             "Get the machine fingerprint",
-            "If RSCP already gave you a trial/unbound license, skip to Step 6. Otherwise double-click 'get_machine_fingerprint.bat' in the project root. It creates 'machine_fingerprint.json' for this computer.",
-            "如果 RSCP 已经直接给了试用版或 unbound 授权，可以跳到 Step 6。否则双击项目根目录里的 `get_machine_fingerprint.bat`，为当前电脑生成 `machine_fingerprint.json`。",
+            "If RSCP already gave you a trial/unbound license, skip to Step 6. Otherwise double-click 'runtime\\get_machine_fingerprint.bat'. It creates a timestamped fingerprint file under 'licenses\\requests\\'.",
+            "如果 RSCP 已经直接给了试用版或 unbound 授权，可以跳到 Step 6。否则双击 `runtime\\get_machine_fingerprint.bat`，它会在 `licenses\\requests\\` 下生成带时间戳的机器指纹文件。",
         ),
         (
             "Step 5",
             "Request the license file",
-            "For a machine-locked license, send 'machine_fingerprint.json' to RSCP and request the signed 'license.json' for this computer. For a short-term trial, RSCP can issue an unbound license directly.",
-            "如果要机绑授权，把 `machine_fingerprint.json` 发给 RSCP，并申请这台电脑专用的签名授权文件 `license.json`。如果只是短期试用，RSCP 也可以直接发 unbound 授权。",
+            "For a machine-locked license, send the fingerprint file from 'licenses\\requests\\' to RSCP and request the signed 'license.json' for this computer. For a short-term trial, RSCP can issue an unbound license directly.",
+            "如果要机绑授权，把 `licenses\\requests\\` 下生成的机器指纹文件发给 RSCP，并申请这台电脑专用的签名授权文件 `license.json`。如果只是短期试用，RSCP 也可以直接发 unbound 授权。",
         ),
         (
             "Step 6",
             "Place the license file",
-            "Copy the signed 'license.json' into the project root, next to main.py and run_optimizer.bat.",
-            "把签名后的 `license.json` 放到项目根目录，也就是和 `main.py`、`run_optimizer.bat` 同级的位置。",
+            "Copy the signed 'license.json' into 'licenses\\active\\license.json'. The legacy project-root 'license.json' path is still supported.",
+            "把签名后的 `license.json` 放到 `licenses\\active\\license.json`。旧的项目根目录 `license.json` 方式仍然兼容。",
         ),
         (
             "Step 7",
@@ -146,8 +151,8 @@ def _create_deployment_steps(worksheet) -> None:
         (
             "Step 10",
             "Run the tool",
-            "Press Ctrl+S to save first. Then click 'Run Optimizer' in Control_Panel, or run: python main.py --input-template \"Tooling Control Panel/Capacity_Optimizer_Control.xlsx\". If required packages or license files are missing, the run batch file will stop and tell you what to do next.",
-            "先按 `Ctrl+S` 保存，再在 `Control_Panel` 点击 `Run Optimizer`，或者在命令行运行：`python main.py --input-template \"Tooling Control Panel/Capacity_Optimizer_Control.xlsx\"`。如果依赖或授权文件缺失，运行批处理会先停止并明确告诉你下一步该做什么。",
+            "Press Ctrl+S to save first. Then click 'Run Optimizer' in Control_Panel, or run: python -m app.main --input-template \"Tooling Control Panel/Capacity_Optimizer_Control.xlsx\". If required packages or license files are missing, the run batch file will stop and tell you what to do next.",
+            "先按 `Ctrl+S` 保存，再在 `Control_Panel` 点击 `Run Optimizer`，或者在命令行运行：`python -m app.main --input-template \"Tooling Control Panel/Capacity_Optimizer_Control.xlsx\"`。如果依赖或授权文件缺失，运行批处理会先停止并明确告诉你下一步该做什么。",
         ),
         (
             "Step 11",
@@ -158,8 +163,8 @@ def _create_deployment_steps(worksheet) -> None:
         (
             "Step 12",
             "If the run fails",
-            "Check that the four migration settings point to valid folders, master_capacity.csv and planner files exist, Python packages were installed successfully, and a valid 'license.json' is present in the project root. If needed, run 'setup_requirements.bat' again or regenerate 'machine_fingerprint.json'.",
-            "如果运行失败，优先检查四个迁移路径是否正确，`master_capacity.csv` 和 planner 文件是否存在，依赖包是否安装成功，以及项目根目录里是否放了有效的 `license.json`。必要时重新运行 `setup_requirements.bat` 或重新生成 `machine_fingerprint.json`。",
+            "Check that the four migration settings point to valid folders, master_capacity.csv and planner files exist, Python packages were installed successfully, and a valid license is present under 'licenses\\active\\license.json' or the legacy project-root path. If needed, run 'runtime\\setup_requirements.bat' again or regenerate the machine fingerprint.",
+            "如果运行失败，优先检查四个迁移路径是否正确，`master_capacity.csv` 和 planner 文件是否存在，依赖包是否安装成功，以及 `licenses\\active\\license.json` 或旧项目根目录下是否有有效授权。必要时重新运行 `runtime\\setup_requirements.bat` 或重新生成机器指纹。",
         ),
     ]
 
@@ -192,13 +197,13 @@ def _create_instructions(worksheet) -> None:
     lines = [
         ("CHEMICAL CAPACITY OPTIMIZER - EXCEL WORKFLOW", True),
         ("", False),
-        ("1. Run setup_requirements.bat on a new computer.", False),
-        ("2. For a short trial, ask RSCP for an unbound trial license and place license.json in the project root.", False),
-        ("3. For a machine-locked license, run get_machine_fingerprint.bat and send machine_fingerprint.json to RSCP.", False),
-        ("4. Place the signed license.json in the project root.", False),
+        ("1. Run runtime\\setup_requirements.bat on a new computer.", False),
+        ("2. For a short trial, ask RSCP for an unbound trial license and place it in licenses\\active\\license.json.", False),
+        ("3. For a machine-locked license, run runtime\\get_machine_fingerprint.bat and send the file from licenses\\requests\\ to RSCP.", False),
+        ("4. Place the signed license.json in licenses\\active\\license.json.", False),
         ("5. Fill in the Control_Panel sheet.", False),
         ("6. Planner and master data stay in CSV/Excel files on disk; the Python tool reads them directly.", False),
-        ("7. Run: python main.py --input-template \"Tooling Control Panel/Capacity_Optimizer_Control.xlsx\"", False),
+        ("7. Run: python -m app.main --input-template \"Tooling Control Panel/Capacity_Optimizer_Control.xlsx\"", False),
         ("   Or click the Run button inside Control_Panel.", False),
         ("8. The tool writes one Excel result workbook per mode, with dashboard/report sheets included.", False),
         ("", False),
@@ -217,9 +222,9 @@ def _create_instructions(worksheet) -> None:
         ("Skip_Validation_Errors: only use 'Yes' when you intentionally want a forced run.", False),
         ("", False),
         ("LICENSE", True),
-        ("license.json: required in the project root before the optimizer can run.", False),
+        ("license.json: recommended location is licenses\\active\\license.json; the legacy project-root path is also supported.", False),
         ("Trial / unbound license: no machine fingerprint required; RSCP can issue it directly.", False),
-        ("get_machine_fingerprint.bat: creates machine_fingerprint.json for RSCP to issue a machine-locked license.", False),
+        ("runtime\\get_machine_fingerprint.bat: creates a timestamped fingerprint file under licenses\\requests\\ for RSCP to issue a machine-locked license.", False),
         ("Run_Info: each output workbook records license status, license ID, customer, expiry date, and binding mode.", False),
         ("", False),
         ("RESULT WORKBOOK CONTENT", True),
@@ -238,7 +243,7 @@ def _create_instructions(worksheet) -> None:
         )
 
 
-def _create_control_panel(worksheet, lists_ws) -> None:
+def _create_control_panel(worksheet, lists_ws, scenario_options: list[str]) -> None:
     worksheet.column_dimensions["A"].width = 28
     worksheet.column_dimensions["B"].width = 54
     worksheet.column_dimensions["C"].width = 64
@@ -256,7 +261,7 @@ def _create_control_panel(worksheet, lists_ws) -> None:
     worksheet.merge_cells("A3:C3")
     worksheet["A3"] = (
         "Recommended portable setup: keep Project_Root_Folder = '..', "
-        "Input folders = 'Data_Input', Output_Folder = 'output', and place 'license.json' in the project root. "
+        "Input folders = 'Data_Input', Output_Folder = 'output', and place 'license.json' in 'licenses\\active\\'. "
         "See 'Deployment_Steps' for the full setup checklist."
     )
     worksheet["A3"].font = Font(color="7F6000", bold=True, size=10)
@@ -266,7 +271,6 @@ def _create_control_panel(worksheet, lists_ws) -> None:
     worksheet.row_dimensions[3].height = 32
 
     now = datetime.now()
-    scenario_options = _scenario_options()
     default_scenario = scenario_options[0] if scenario_options else "Base Scenario"
 
     migration_rows = [
@@ -346,7 +350,7 @@ def _create_control_panel(worksheet, lists_ws) -> None:
     worksheet.freeze_panes = "B4"
     worksheet[f"A{current_row + 1}"] = "Run command"
     worksheet[f"A{current_row + 1}"].font = Font(bold=True, color="1F4E79", size=11)
-    worksheet[f"B{current_row + 1}"] = 'python main.py --input-template "Tooling Control Panel/Capacity_Optimizer_Control.xlsx"'
+    worksheet[f"B{current_row + 1}"] = 'python -m app.main --input-template "Tooling Control Panel/Capacity_Optimizer_Control.xlsx"'
     worksheet[f"B{current_row + 1}"].alignment = Alignment(wrap_text=True)
 
     worksheet[f"A{current_row + 3}"] = "Quick actions"
@@ -356,21 +360,21 @@ def _create_control_panel(worksheet, lists_ws) -> None:
         top_left=f"B{current_row + 3}",
         bottom_right=f"C{current_row + 4}",
         label="Setup Dependencies",
-        target=r"..\setup_requirements.bat",
+        target=r"..\runtime\setup_requirements.bat",
     )
     _add_action_button(
         worksheet,
         top_left=f"B{current_row + 6}",
         bottom_right=f"C{current_row + 7}",
         label="Get Machine Fingerprint",
-        target=r"..\get_machine_fingerprint.bat",
+        target=r"..\runtime\get_machine_fingerprint.bat",
     )
     _add_action_button(
         worksheet,
         top_left=f"B{current_row + 9}",
         bottom_right=f"C{current_row + 10}",
         label="Run Optimizer",
-        target=r"..\run_optimizer.bat",
+        target=r"..\runtime\run_optimizer.bat",
     )
     _add_action_button(
         worksheet,
@@ -383,8 +387,8 @@ def _create_control_panel(worksheet, lists_ws) -> None:
     worksheet[f"A{current_row + 15}"].font = Font(bold=True, color="1F4E79", size=11)
     worksheet[f"B{current_row + 15}"] = (
         "On a new computer, click Setup Dependencies first. If RSCP gave you a trial/unbound license, "
-        "place license.json in the project root and continue. Otherwise click Get Machine Fingerprint, "
-        "send machine_fingerprint.json to RSCP, place the returned license.json in the project root, "
+        "place license.json in licenses\\active and continue. Otherwise click Get Machine Fingerprint, "
+        "send the generated file from licenses\\requests to RSCP, place the returned license.json in licenses\\active, "
         "save the workbook (Ctrl+S), and click Run Optimizer."
     )
     worksheet[f"B{current_row + 15}"].alignment = Alignment(wrap_text=True)
@@ -404,7 +408,7 @@ def _create_control_panel(worksheet, lists_ws) -> None:
         )
 
 
-def _create_lists(worksheet) -> None:
+def _create_lists(worksheet, scenario_options: list[str]) -> None:
     worksheet["A1"] = "Run_Mode"
     worksheet["A2"] = "ModeA"
     worksheet["A3"] = "ModeB"
@@ -419,17 +423,17 @@ def _create_lists(worksheet) -> None:
         worksheet.cell(month + 1, 3, month)
 
     worksheet["D1"] = "Scenario_Name"
-    for row_num, scenario in enumerate(_scenario_options(), start=2):
+    for row_num, scenario in enumerate(scenario_options, start=2):
         worksheet.cell(row_num, 4, scenario)
 
     for column in range(1, 5):
         worksheet.column_dimensions[get_column_letter(column)].width = 22
 
 
-def _scenario_options() -> list[str]:
-    if os.path.isdir(DEFAULT_LOAD_DIR):
+def _scenario_options(load_dir: str) -> list[str]:
+    if os.path.isdir(load_dir):
         try:
-            options = discover_planner_scenarios(DEFAULT_LOAD_DIR)
+            options = discover_planner_scenarios(load_dir)
             if options:
                 return options
         except Exception:

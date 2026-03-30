@@ -1,16 +1,16 @@
 @echo off
 setlocal
 title Capacity Optimizer - Dependency Setup
-cd /d "%~dp0"
+cd /d "%~dp0\.."
 
 echo.
 echo Capacity Optimizer - Dependency Setup
 echo ------------------------------------
 echo Project folder:
-echo   %~dp0
+echo   %CD%
 echo.
 
-if not exist "%~dp0requirements.txt" (
+if not exist "%CD%\requirements.txt" (
     echo ERROR: requirements.txt not found.
     goto :fail
 )
@@ -61,13 +61,16 @@ echo Verifying Python imports...
 call %PY_CMD% -c "import ortools, pandas, openpyxl, click, colorama, cryptography; print('Dependency check: OK')"
 if errorlevel 1 goto :fail
 
+if not exist "%CD%\licenses\active" mkdir "%CD%\licenses\active" >nul 2>nul
+if not exist "%CD%\licenses\requests" mkdir "%CD%\licenses\requests" >nul 2>nul
+
 echo.
 echo Setup completed successfully.
 echo Next step:
-echo 1. If RSCP already provided a trial or unbound license, place license.json in the project root
-echo 2. Otherwise run get_machine_fingerprint.bat to create machine_fingerprint.json
-echo 3. Send machine_fingerprint.json to RSCP and place the returned license.json in the project root
-echo 4. Open Capacity_Optimizer_Control.xlsx and run the tool
+echo 1. If RSCP already provided a trial or unbound license, place license.json in licenses\active\
+echo 2. Otherwise run runtime\get_machine_fingerprint.bat to create a request file under licenses\requests\
+echo 3. Send that file to RSCP and place the returned license.json in licenses\active\
+echo 4. Open Tooling Control Panel\Capacity_Optimizer_Control.xlsx and run the tool
 goto :end
 
 :fail

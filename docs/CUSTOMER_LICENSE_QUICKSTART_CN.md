@@ -42,10 +42,10 @@ D:\capacity_optimizer
 
 ### Step 2：安装依赖
 
-双击项目根目录里的：
+双击：
 
 ```text
-setup_requirements.bat
+runtime\setup_requirements.bat
 ```
 
 等待安装完成。
@@ -58,17 +58,22 @@ setup_requirements.bat
 license.json
 ```
 
-放到项目根目录，也就是和这些文件同级的位置：
+放到推荐位置：
 
-- `main.py`
-- `run_optimizer.bat`
-- `setup_requirements.bat`
+```text
+licenses\active\license.json
+```
 
 例如：
 
 ```text
-D:\capacity_optimizer\license.json
+D:\capacity_optimizer\licenses\active\license.json
 ```
+
+兼容说明：
+
+- 旧版本仍可读取项目根目录下的 `license.json`
+- 但后续建议统一使用 `licenses\active\license.json`
 
 ### Step 4：打开控制工作簿
 
@@ -90,7 +95,7 @@ Tooling Control Panel\Capacity_Optimizer_Control.xlsx
 先按 `Ctrl+S` 保存，再双击：
 
 ```text
-run_optimizer.bat
+runtime\run_optimizer.bat
 ```
 
 成功后，工具会自动打开 `output` 文件夹。
@@ -107,15 +112,15 @@ run_optimizer.bat
 这表示：
 
 - 你不需要先生成机器指纹
-- 只要 `license.json` 在项目根目录，就可以直接运行
+- 只要授权文件放在 `licenses\active\license.json`，就可以直接运行
 
 试用版的操作步骤就是：
 
 1. 复制工具文件夹
-2. 运行 `setup_requirements.bat`
+2. 运行 `runtime\setup_requirements.bat`
 3. 放入 RSCP 提供的 `license.json`
 4. 打开控制工作簿
-5. 保存后运行 `run_optimizer.bat`
+5. 保存后运行 `runtime\run_optimizer.bat`
 
 ---
 
@@ -128,18 +133,24 @@ run_optimizer.bat
 双击：
 
 ```text
-get_machine_fingerprint.bat
+runtime\get_machine_fingerprint.bat
 ```
 
-运行后会在项目根目录生成：
+运行后会在下面目录生成一个带时间戳的文件：
 
 ```text
-machine_fingerprint.json
+licenses\requests\
+```
+
+文件名类似：
+
+```text
+machine_fingerprint_DUPONT-PC01_20260330_101500.json
 ```
 
 ### Step 2：把机器指纹发给 RSCP
 
-把 `machine_fingerprint.json` 发给 RSCP。
+把 `licenses\requests\` 里最新生成的那个文件发给 RSCP。
 
 ### Step 3：接收正式版授权文件
 
@@ -149,12 +160,18 @@ RSCP 会返回正式版：
 license.json
 ```
 
-### Step 4：放回项目根目录
+### Step 4：放到有效授权目录
 
-把新的 `license.json` 放到项目根目录，然后运行：
+把新的 `license.json` 放到：
 
 ```text
-run_optimizer.bat
+licenses\active\license.json
+```
+
+然后运行：
+
+```text
+runtime\run_optimizer.bat
 ```
 
 ---
@@ -165,10 +182,10 @@ run_optimizer.bat
 
 只需要：
 
-1. 运行 `get_machine_fingerprint.bat`
-2. 把 `machine_fingerprint.json` 发给 RSCP
+1. 运行 `runtime\get_machine_fingerprint.bat`
+2. 把 `licenses\requests\` 里生成的机器指纹文件发给 RSCP
 3. 收到新的正式版 `license.json`
-4. 用新的 `license.json` 替换旧的试用版 `license.json`
+4. 用新的 `license.json` 覆盖 `licenses\active\license.json`
 5. 重新运行工具
 
 ---
@@ -178,7 +195,7 @@ run_optimizer.bat
 如果只是授权到期，但电脑没有变：
 
 1. 向 RSCP 申请新的 `license.json`
-2. 用新的 `license.json` 替换项目根目录里的旧文件
+2. 用新的 `license.json` 覆盖 `licenses\active\license.json`
 3. 重新运行工具
 
 一般情况下：
@@ -196,11 +213,11 @@ run_optimizer.bat
 在新电脑上：
 
 1. 复制整个工具文件夹
-2. 运行 `setup_requirements.bat`
-3. 运行 `get_machine_fingerprint.bat`
-4. 把新的 `machine_fingerprint.json` 发给 RSCP
+2. 运行 `runtime\setup_requirements.bat`
+3. 运行 `runtime\get_machine_fingerprint.bat`
+4. 把新的 `licenses\requests\` 里的机器指纹文件发给 RSCP
 5. 收到新的 `license.json`
-6. 把新的 `license.json` 放到新电脑的项目根目录
+6. 把新的 `license.json` 放到新电脑的 `licenses\active\license.json`
 7. 运行工具
 
 注意：
@@ -213,7 +230,7 @@ run_optimizer.bat
 
 如果出现下面任一情况，工具会停止：
 
-- 项目根目录没有 `license.json`
+- `licenses\active\license.json` 和根目录 `license.json` 都不存在
 - `license.json` 被修改或无效
 - 授权已过期
 - 正式版授权绑定的机器与当前电脑不匹配
@@ -228,23 +245,23 @@ run_optimizer.bat
 如果是正式版，请先运行：
 
 ```text
-get_machine_fingerprint.bat
+runtime\get_machine_fingerprint.bat
 ```
 
 ### 9.2 不知道 `license.json` 放哪里
 
-放在项目根目录，也就是和这些文件同级：
+推荐放在：
 
-- `main.py`
-- `run_optimizer.bat`
-- `setup_requirements.bat`
+```text
+licenses\active\license.json
+```
 
 ### 9.3 点了 `Run Optimizer` 不能运行
 
 先检查：
 
-- 是否已经运行过 `setup_requirements.bat`
-- 项目根目录里是否有 `license.json`
+- 是否已经运行过 `runtime\setup_requirements.bat`
+- `licenses\active\license.json` 或项目根目录里是否有有效授权
 - 控制工作簿是否已经保存
 
 ### 9.4 输出文件没有生成
@@ -263,7 +280,6 @@ get_machine_fingerprint.bat
 
 - 你的公司名称
 - 当前使用的是试用版还是正式版
-- `machine_fingerprint.json`（正式版时）
+- `licenses\requests\` 里最新的机器指纹文件
 - 错误截图
 - 当前 `license.json` 的到期日期
-

@@ -14,7 +14,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from machine_fingerprint import get_machine_fingerprint, get_machine_label
+from app.machine_fingerprint import get_machine_fingerprint, get_machine_label
 
 
 PRODUCT_NAME = "Chemical Capacity Optimizer"
@@ -47,8 +47,11 @@ class LicenseInfo:
     status: str = "Valid"
 
 
-def _license_path(project_root: str) -> str:
-    return os.path.join(project_root, LICENSE_FILENAME)
+def _license_candidates(project_root: str) -> list[str]:
+    return [
+        os.path.join(project_root, "licenses", "active", LICENSE_FILENAME),
+        os.path.join(project_root, LICENSE_FILENAME),
+    ]
 
 
 def _load_license_payload(path: str) -> dict[str, Any]:
@@ -120,7 +123,17 @@ def _verify_signature(payload: dict[str, Any]) -> None:
 
 
 def validate_license(project_root: str, today: date | None = None) -> LicenseInfo:
-    payload = _load_license_payload(_license_path(project_root))
+    resolved_license_path = next((path for path in _license_candidates(project_root) if os.path.exists(path)), None)
+    if not resolved_license_path:
+        expected_paths = "\n".join(f"- {path}" for path in _license_candidates(project_root))
+        raise LicenseValidationError(
+            "License file not found.\n"
+            "Checked these locations:\n"
+            f"{expected_paths}\n"
+            "Please contact RSCP for a valid license file."
+        )
+
+    payload = _load_license_payload(resolved_license_path)
 
     version = int(payload.get("license_version", 0))
     if version != LICENSE_VERSION:
@@ -186,5 +199,5 @@ def validate_license(project_root: str, today: date | None = None) -> LicenseInf
         machine_label=machine_label,
         note=str(payload.get("note") or "").strip(),
         features=payload.get("features") if isinstance(payload.get("features"), dict) else {},
-        license_path=_license_path(project_root),
+        license_path=resolved_license_path,
     )

@@ -7,14 +7,14 @@ These scripts are for RSCP internal use. Do not ship private keys to customers.
 For day-to-day use, the easiest entry point is:
 
 ```text
-open_license_generator.bat
+license_admin\open_license_generator.bat
 ```
 
 It opens a local desktop form where you can:
 
 - choose `Trial / Unbound` or `Manual / Custom`
 - fill customer information
-- load `machine_fingerprint.json` when needed
+- load the fingerprint request file generated under `licenses\requests\` when needed
 - click `Generate License`
 
 The GUI uses the same signing logic as the command-line scripts below.
@@ -64,7 +64,7 @@ Result:
 ## 2. Machine-locked commercial license
 
 Use this flow when the customer sends back `machine_fingerprint.json` from
-`get_machine_fingerprint.bat`.
+`runtime\get_machine_fingerprint.bat`.
 
 ```powershell
 python license_admin\license_tools\generate_license.py `

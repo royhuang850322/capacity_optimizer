@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0\.."
 
 set "PY_CMD="
 where python >nul 2>nul
@@ -20,7 +20,7 @@ if not defined PY_CMD (
 echo.
 echo Chemical Capacity Optimizer - Machine Fingerprint
 echo -------------------------------------------------
-call %PY_CMD% machine_fingerprint.py --out "%~dp0machine_fingerprint.json"
+call %PY_CMD% -m app.machine_fingerprint --out-dir "%CD%\licenses\requests"
 if errorlevel 1 (
     echo.
     echo Failed to generate machine fingerprint.
@@ -29,8 +29,8 @@ if errorlevel 1 (
 )
 
 echo.
-echo machine_fingerprint.json has been created in:
-echo   %~dp0machine_fingerprint.json
-echo Please send this file to RSCP to request a machine-locked license.
+echo A machine fingerprint request file has been created in:
+echo   %CD%\licenses\requests
+echo Please send that file to RSCP to request a machine-locked license.
 pause
 exit /b 0

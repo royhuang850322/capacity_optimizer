@@ -1,7 +1,7 @@
 @echo off
 setlocal
 title Capacity Optimizer - License Generator
-cd /d "%~dp0"
+cd /d "%~dp0\.."
 
 set "PY_CMD="
 set "PYW_CMD="
@@ -19,12 +19,12 @@ echo.
 echo Chemical Capacity Optimizer - License Generator
 echo -----------------------------------------------
 echo Project folder:
-echo   %~dp0
+echo   %CD%
 echo.
 
 if not defined PY_CMD (
     echo Python was not found on this computer.
-    echo Install Python first, then run setup_requirements.bat.
+    echo Install Python first, then run runtime\setup_requirements.bat.
     goto :end
 )
 
@@ -33,7 +33,7 @@ call %PY_CMD% -c "import tkinter, cryptography"
 if errorlevel 1 (
     echo.
     echo Required Python packages are missing or incomplete.
-    echo Run setup_requirements.bat first, then try again.
+    echo Run runtime\setup_requirements.bat first, then try again.
     goto :end
 )
 

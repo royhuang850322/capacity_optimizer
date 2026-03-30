@@ -2,7 +2,7 @@
 Chemical Capacity Optimizer CLI entry point.
 
 Excel-first workflow:
-  python main.py --input-template "Tooling Control Panel/Capacity_Optimizer_Control.xlsx"
+  python -m app.main --input-template "Tooling Control Panel/Capacity_Optimizer_Control.xlsx"
 """
 from __future__ import annotations
 
@@ -13,15 +13,15 @@ from typing import Any
 
 import click
 
-from data_loader import (
+from app.data_loader import (
     load_config,
     load_direct_mode_a,
     load_direct_mode_b,
     load_from_template_pq,
 )
-from optimizer import run_optimization_mode_a, run_optimization_mode_b
-from output_writer import write_mode_comparison_summary, write_results
-from validator import has_errors, print_issues, validate
+from app.optimizer import run_optimization_mode_a, run_optimization_mode_b
+from app.output_writer import write_mode_comparison_summary, write_results
+from app.validator import has_errors, print_issues, validate
 
 
 @click.command()
@@ -83,11 +83,11 @@ def main(
         _fatal(f"Could not read control workbook: {exc}")
 
     try:
-        from license_validator import LicenseValidationError, validate_license
+        from app.license_validator import LicenseValidationError, validate_license
     except ModuleNotFoundError as exc:
         _fatal(
             "Required Python packages are missing or incomplete.\n"
-            "Run setup_requirements.bat first, then try again."
+            "Run runtime\\setup_requirements.bat first, then try again."
         )
 
     if output_name:
@@ -301,7 +301,7 @@ def _validate_direct_mode_setup(config, modes_to_run: list[str]) -> None:
     _validate_required_directory(
         "Project_Root_Folder",
         config.project_root_folder,
-        required_entries=["main.py", "run_optimizer.bat", "Tooling Control Panel"],
+        required_entries=["app", "runtime", "Tooling Control Panel"],
         purpose="tool root",
     )
     _validate_required_directory(
@@ -357,7 +357,7 @@ def _validate_output_folder(path: str) -> None:
 
 
 def _validate_planner_files(load_folder: str) -> None:
-    from data_loader import _find_planner_files
+    from app.data_loader import _find_planner_files
 
     _find_planner_files(load_folder)
 
@@ -436,7 +436,7 @@ def _selected_scenario(configured_scenario: str | None) -> str | None:
 
 def _banner() -> None:
     click.echo("=" * 60)
-    click.echo("  Chemical Capacity Optimizer  v1.1.0")
+    click.echo("  Chemical Capacity Optimizer  v1.1.1")
     click.echo("  Excel Control Workbook + Python Optimization + Excel Reports")
     click.echo("=" * 60)
 
