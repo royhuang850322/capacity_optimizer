@@ -3,11 +3,12 @@ Create the Excel control workbook used by the Capacity Optimizer.
 """
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
 
 import click
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
@@ -44,6 +45,7 @@ def main(out: str) -> None:
 def write_control_workbook(out: str, load_dir: str | None = None) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     scenario_options = _scenario_options(load_dir or DEFAULT_LOAD_DIR)
+    project_root = _default_project_root_for_workbook(out)
 
     workbook = Workbook()
     workbook.remove(workbook.active)
@@ -57,12 +59,216 @@ def write_control_workbook(out: str, load_dir: str | None = None) -> None:
     instructions_ws = workbook.create_sheet("Instructions")
     _create_instructions(instructions_ws)
 
+    license_ws = workbook.create_sheet("License")
+    _create_license_sheet(license_ws, _inspect_current_license(project_root))
+
     control_ws = workbook.create_sheet("Control_Panel")
     _create_control_panel(control_ws, lists_ws, scenario_options)
 
     lists_ws.sheet_state = "hidden"
     workbook.active = workbook.index(deployment_ws)
     workbook.save(out)
+
+
+def refresh_control_workbook_license_sheet(
+    workbook_path: str,
+    *,
+    project_root: str | None = None,
+    license_info=None,
+) -> None:
+    workbook = load_workbook(workbook_path)
+    try:
+        sheet_index = workbook.index(workbook["License"]) if "License" in workbook.sheetnames else workbook.index(workbook["Control_Panel"])
+        if "License" in workbook.sheetnames:
+            workbook.remove(workbook["License"])
+        license_ws = workbook.create_sheet("License", sheet_index)
+        effective_project_root = project_root or _default_project_root_for_workbook(workbook_path)
+        _create_license_sheet(
+            license_ws,
+            _inspect_current_license(effective_project_root, license_info=license_info),
+        )
+        workbook.save(workbook_path)
+    finally:
+        workbook.close()
+
+
+def _default_project_root_for_workbook(workbook_path: str) -> str:
+    workbook_dir = os.path.dirname(os.path.abspath(workbook_path))
+    return os.path.abspath(os.path.join(workbook_dir, DEFAULT_PROJECT_ROOT))
+
+
+def _inspect_current_license(project_root: str, license_info=None) -> dict[str, str]:
+    active_path = os.path.join(project_root, "licenses", "active", "license.json")
+    legacy_path = os.path.join(project_root, "license.json")
+    existing_path = next((path for path in (active_path, legacy_path) if os.path.exists(path)), active_path)
+
+    if license_info is not None:
+        return _license_display_payload(
+            status=getattr(license_info, "status", "Valid"),
+            license_id=getattr(license_info, "license_id", ""),
+            license_type=getattr(license_info, "license_type", ""),
+            customer_name=getattr(license_info, "customer_name", ""),
+            issue_date=getattr(license_info, "issue_date", ""),
+            expiry_date=getattr(license_info, "expiry_date", ""),
+            binding_mode=getattr(license_info, "binding_mode", ""),
+            machine_label=getattr(license_info, "machine_label", ""),
+            license_path=getattr(license_info, "license_path", existing_path),
+            note=getattr(license_info, "note", ""),
+            message="License validated successfully.",
+        )
+
+    try:
+        from app.license_validator import LicenseValidationError, validate_license
+    except Exception as exc:
+        return _license_display_payload(
+            status="Unavailable",
+            license_path=existing_path,
+            message=f"License validation module unavailable: {exc}",
+        )
+
+    try:
+        info = validate_license(project_root)
+        return _license_display_payload(
+            status=info.status,
+            license_id=info.license_id,
+            license_type=info.license_type,
+            customer_name=info.customer_name,
+            issue_date=info.issue_date,
+            expiry_date=info.expiry_date,
+            binding_mode=info.binding_mode,
+            machine_label=info.machine_label,
+            license_path=info.license_path,
+            note=info.note,
+            message="License validated successfully.",
+        )
+    except LicenseValidationError as exc:
+        raw_payload = _best_effort_license_payload(existing_path)
+        status = "Not configured" if not os.path.exists(existing_path) else "Invalid"
+        return _license_display_payload(
+            status=status,
+            license_id=raw_payload.get("license_id", ""),
+            license_type=raw_payload.get("license_type", ""),
+            customer_name=raw_payload.get("customer_name", ""),
+            issue_date=raw_payload.get("issue_date", ""),
+            expiry_date=raw_payload.get("expiry_date", ""),
+            binding_mode=raw_payload.get("binding_mode", ""),
+            machine_label=raw_payload.get("machine_label", ""),
+            license_path=existing_path,
+            note=raw_payload.get("note", ""),
+            message=str(exc).splitlines()[0] if str(exc).strip() else "License is not configured.",
+        )
+
+
+def _best_effort_license_payload(path: str) -> dict[str, str]:
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {str(key): str(value).strip() for key, value in payload.items() if value is not None}
+
+
+def _license_display_payload(
+    *,
+    status: str,
+    license_id: str = "",
+    license_type: str = "",
+    customer_name: str = "",
+    issue_date: str = "",
+    expiry_date: str = "",
+    binding_mode: str = "",
+    machine_label: str = "",
+    license_path: str = "",
+    note: str = "",
+    message: str = "",
+) -> dict[str, str]:
+    return {
+        "License_Status": status or "Unknown",
+        "License_Name": license_id or "",
+        "License_Mode": _friendly_license_mode(license_type, binding_mode),
+        "License_Type": license_type or "",
+        "Binding_Mode": binding_mode or "",
+        "Licensed_To": customer_name or "",
+        "Issue_Date": issue_date or "",
+        "Expiry_Date": expiry_date or "",
+        "Machine_Name": machine_label or ("Not bound" if binding_mode == "unbound" else ""),
+        "License_File_Path": license_path or "",
+        "Note": note or "",
+        "Message": message or "",
+    }
+
+
+def _friendly_license_mode(license_type: str, binding_mode: str) -> str:
+    license_label = {
+        "trial": "Trial",
+        "commercial": "Commercial",
+    }.get(str(license_type or "").strip().lower(), str(license_type or "").strip().title())
+    binding_label = {
+        "unbound": "Unbound",
+        "machine_locked": "Machine Locked",
+    }.get(str(binding_mode or "").strip().lower(), str(binding_mode or "").strip().replace("_", " ").title())
+    if license_label and binding_label:
+        return f"{license_label} / {binding_label}"
+    return license_label or binding_label
+
+
+def _create_license_sheet(worksheet, license_display: dict[str, str]) -> None:
+    worksheet.column_dimensions["A"].width = 28
+    worksheet.column_dimensions["B"].width = 42
+    worksheet.column_dimensions["C"].width = 68
+
+    worksheet.merge_cells("A1:C1")
+    worksheet["A1"] = "Current License"
+    worksheet["A1"].font = Font(color="FFFFFF", bold=True, size=13)
+    worksheet["A1"].fill = HDR_FILL
+    worksheet["A1"].alignment = Alignment(horizontal="center", vertical="center")
+    worksheet["A1"].border = BORDER
+    worksheet.row_dimensions[1].height = 24
+
+    worksheet.merge_cells("A2:C2")
+    worksheet["A2"] = (
+        "This sheet shows the currently detected license for this tool copy. "
+        "Values refresh when the workbook is generated and again when the optimizer can save updates back to this file."
+    )
+    worksheet["A2"].font = Font(color="7F6000", bold=True, size=10)
+    worksheet["A2"].fill = MIGRATION_VAL_FILL
+    worksheet["A2"].alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    worksheet["A2"].border = BORDER
+    worksheet.row_dimensions[2].height = 34
+
+    _write_header(worksheet, 4, ["Parameter", "Value", "Description"])
+    rows = [
+        ("License_Status", license_display.get("License_Status", ""), "Current validation status of the active license"),
+        ("License_Name", license_display.get("License_Name", ""), "Current license ID / license name"),
+        ("License_Mode", license_display.get("License_Mode", ""), "Friendly label such as Trial / Unbound or Commercial / Machine Locked"),
+        ("License_Type", license_display.get("License_Type", ""), "License type from license.json"),
+        ("Binding_Mode", license_display.get("Binding_Mode", ""), "Whether the license is unbound or machine locked"),
+        ("Licensed_To", license_display.get("Licensed_To", ""), "Customer name recorded in the license"),
+        ("Issue_Date", license_display.get("Issue_Date", ""), "License issue date"),
+        ("Expiry_Date", license_display.get("Expiry_Date", ""), "License expiry date"),
+        ("Machine_Name", license_display.get("Machine_Name", ""), "Licensed machine label when applicable"),
+        ("License_File_Path", license_display.get("License_File_Path", ""), "Detected license.json location"),
+        ("Note", license_display.get("Note", ""), "Note stored inside the license file"),
+        ("Message", license_display.get("Message", ""), "Last license inspection message"),
+    ]
+    for row_num, (label, value, description) in enumerate(rows, start=5):
+        worksheet[f"A{row_num}"] = label
+        worksheet[f"B{row_num}"] = value
+        worksheet[f"C{row_num}"] = description
+        worksheet[f"A{row_num}"].font = Font(bold=True, size=10)
+        worksheet[f"A{row_num}"].fill = CFG_FILL
+        worksheet[f"B{row_num}"].fill = VAL_FILL
+        worksheet[f"C{row_num}"].fill = VAL_FILL
+        for col in ("A", "B", "C"):
+            worksheet[f"{col}{row_num}"].border = BORDER
+            worksheet[f"{col}{row_num}"].alignment = Alignment(wrap_text=True, vertical="top")
+        worksheet[f"C{row_num}"].font = Font(italic=True, color="666666", size=9)
+
+    worksheet.freeze_panes = "A5"
 
 
 def _create_deployment_steps(worksheet) -> None:

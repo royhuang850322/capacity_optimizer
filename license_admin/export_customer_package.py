@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from app.create_template import write_control_workbook
+from app.create_template import refresh_control_workbook_license_sheet, write_control_workbook
 from license_admin.license_tools.common import sanitize_path_component
 
 DEFAULT_DELIVERY_ROOT = REPO_ROOT / "delivery_packages"
@@ -89,6 +89,10 @@ def build_customer_package(
         if not license_file.exists():
             raise FileNotFoundError(f"License file not found: {license_file}")
         shutil.copy2(license_file, package_path / "licenses" / "active" / "license.json")
+        refresh_control_workbook_license_sheet(
+            str(workbook_path),
+            project_root=str(package_path),
+        )
 
     _write_delivery_readme(
         destination=package_path,

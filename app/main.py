@@ -13,12 +13,14 @@ from typing import Any
 
 import click
 
+from app.create_template import refresh_control_workbook_license_sheet
 from app.data_loader import (
     load_config,
     load_direct_mode_a,
     load_direct_mode_b,
     load_from_template_pq,
 )
+from app.load_pressure import build_dashboard_fact_frame
 from app.optimizer import run_optimization_mode_a, run_optimization_mode_b
 from app.output_writer import write_mode_comparison_summary, write_results
 from app.validator import has_errors, print_issues, validate
@@ -117,6 +119,23 @@ def main(
     config.license_binding_mode = license_info.binding_mode
     config.license_machine_label = license_info.machine_label
 
+    try:
+        refresh_control_workbook_license_sheet(
+            input_template,
+            project_root=config.project_root_folder,
+            license_info=license_info,
+        )
+    except PermissionError:
+        click.echo(
+            "  Note: could not refresh the License sheet because the control workbook is open in Excel.",
+            err=False,
+        )
+    except Exception as exc:
+        click.echo(
+            f"  Note: could not refresh the License sheet: {exc}",
+            err=False,
+        )
+
     config.run_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     selected_scenario = _selected_scenario(config.scenario_name)
     modes_to_run = _resolve_modes(config.run_mode)
@@ -210,6 +229,8 @@ def main(
         metrics_by_mode[selected_mode] = metrics
         run_payloads[selected_mode] = {
             "loads": loads,
+            "capacities": capacities,
+            "routings": routings,
             "results": results,
             "issues": issues,
             "toller_products": toller_products,
@@ -223,17 +244,30 @@ def main(
 
     click.echo("\n[3/4] Writing Excel result workbooks")
     output_paths: dict[str, str] = {}
+    dashboard_facts_by_mode = {
+        selected_mode: build_dashboard_fact_frame(
+            mode=selected_mode,
+            results=run_payloads[selected_mode]["results"],
+            loads=run_payloads[selected_mode]["loads"],
+            capacities=run_payloads[selected_mode]["capacities"],
+            routings=run_payloads[selected_mode]["routings"],
+        )
+        for selected_mode in modes_to_run
+    }
     for selected_mode in modes_to_run:
         payload = run_payloads[selected_mode]
         output_paths[selected_mode] = write_results(
             results=payload["results"],
             loads=payload["loads"],
+            capacities=payload["capacities"],
+            routings=payload["routings"],
             config=config,
             issues=payload["issues"],
             months=months,
             mode=selected_mode,
             toller_products=payload["toller_products"],
             metrics_by_mode=metrics_by_mode,
+            dashboard_facts_by_mode=dashboard_facts_by_mode,
         )
         click.echo(f"  {selected_mode}: {output_paths[selected_mode]}")
 
@@ -241,9 +275,12 @@ def main(
         comparison_path = write_mode_comparison_summary(
             mode_results={mode_name: run_payloads[mode_name]["results"] for mode_name in ("ModeA", "ModeB")},
             mode_loads={mode_name: run_payloads[mode_name]["loads"] for mode_name in ("ModeA", "ModeB")},
+            mode_capacities={mode_name: run_payloads[mode_name]["capacities"] for mode_name in ("ModeA", "ModeB")},
+            mode_routings={mode_name: run_payloads[mode_name]["routings"] for mode_name in ("ModeA", "ModeB")},
             config=config,
             months=months,
             metrics_by_mode=metrics_by_mode,
+            dashboard_facts_by_mode=dashboard_facts_by_mode,
         )
         click.echo(f"  Summary : {comparison_path}")
 
@@ -436,7 +473,7 @@ def _selected_scenario(configured_scenario: str | None) -> str | None:
 
 def _banner() -> None:
     click.echo("=" * 60)
-    click.echo("  Chemical Capacity Optimizer  v1.1.2")
+    click.echo("  Chemical Capacity Optimizer  v1.1.3")
     click.echo("  Excel Control Workbook + Python Optimization + Excel Reports")
     click.echo("=" * 60)
 

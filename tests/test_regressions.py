@@ -2,16 +2,18 @@ import os
 import tempfile
 import unittest
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pandas as pd
 from click.testing import CliRunner
 from openpyxl import load_workbook
 
 from app.data_loader import _aggregate_load_records, _parse_load_df, load_direct_mode_a
-from app.create_template import main as create_template_main
+from app.create_template import main as create_template_main, refresh_control_workbook_license_sheet
 from app.data_loader import load_config
+from app.load_pressure import build_dashboard_fact_frame, build_pressure_load_frame
 from app.main import _validate_direct_mode_setup
-from app.models import AllocationResult, Config, LoadRecord
+from app.models import AllocationResult, CapacityRecord, Config, LoadRecord, RoutingRecord
 from app.optimizer import _build_demand
 from app.output_writer import write_mode_comparison_summary, write_results
 from app.validator import ValidationIssue, format_issue_report, validate
@@ -177,6 +179,7 @@ class RegressionTests(unittest.TestCase):
 
             workbook = load_workbook(template_path)
             self.assertIn("Deployment_Steps", workbook.sheetnames)
+            self.assertIn("License", workbook.sheetnames)
             self.assertEqual(workbook.active.title, "Deployment_Steps")
             deployment_ws = workbook["Deployment_Steps"]
             deployment_text = "\n".join(
@@ -198,6 +201,10 @@ class RegressionTests(unittest.TestCase):
             self.assertIn("unbound", instructions_text.lower())
             self.assertIn(r"runtime\setup_requirements.bat", instructions_text)
             self.assertIn("python -m app.main", instructions_text)
+            license_ws = workbook["License"]
+            self.assertEqual(license_ws["A1"].value, "Current License")
+            self.assertEqual(license_ws["A5"].value, "License_Status")
+            self.assertEqual(license_ws["B5"].value, "Not configured")
             ws = workbook["Control_Panel"]
             row_by_parameter = {
                 ws[f"A{row_num}"].value: row_num
@@ -225,6 +232,48 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(config.input_master_folder, os.path.join(project_root, "Data_Input"))
         self.assertEqual(config.output_folder, os.path.join(project_root, "output"))
 
+    def test_refresh_control_workbook_license_sheet_updates_license_values(self):
+        with workspace_tempdir() as tmpdir:
+            project_root = os.path.join(tmpdir, "portable_root")
+            template_path = os.path.join(project_root, "Tooling Control Panel", "Capacity_Optimizer_Control.xlsx")
+            runner = CliRunner()
+            result = runner.invoke(create_template_main, ["--out", template_path])
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+
+            refresh_control_workbook_license_sheet(
+                template_path,
+                project_root=project_root,
+                license_info=SimpleNamespace(
+                    status="Valid",
+                    license_id="LIC-DUPONT-COMM-2026-0002",
+                    license_type="commercial",
+                    customer_name="DuPont",
+                    issue_date="2026-03-31",
+                    expiry_date="2027-03-30",
+                    binding_mode="machine_locked",
+                    machine_label="DUPONT-PC01",
+                    license_path=os.path.join(project_root, "licenses", "active", "license.json"),
+                    note="Annual commercial license",
+                ),
+            )
+
+            workbook = load_workbook(template_path, data_only=True)
+            license_ws = workbook["License"]
+            sheet_values = {
+                license_ws[f"A{row_num}"].value: license_ws[f"B{row_num}"].value
+                for row_num in range(5, 17)
+                if license_ws[f"A{row_num}"].value
+            }
+            workbook.close()
+
+        self.assertEqual(sheet_values["License_Status"], "Valid")
+        self.assertEqual(sheet_values["License_Name"], "LIC-DUPONT-COMM-2026-0002")
+        self.assertEqual(sheet_values["License_Mode"], "Commercial / Machine Locked")
+        self.assertEqual(sheet_values["Licensed_To"], "DuPont")
+        self.assertEqual(sheet_values["Issue_Date"], "2026-03-31")
+        self.assertEqual(sheet_values["Expiry_Date"], "2027-03-30")
+        self.assertEqual(sheet_values["Machine_Name"], "DUPONT-PC01")
+
     def test_write_results_creates_excel_report_sheets(self):
         with workspace_tempdir() as tmpdir:
             config = Config(
@@ -246,7 +295,34 @@ class RegressionTests(unittest.TestCase):
                     product_family="F1",
                     plant="PLT1",
                     forecast_tons=100.0,
+                    resource_group_owner="WC1",
                 )
+            ]
+            capacities = [
+                CapacityRecord(
+                    product="P1",
+                    work_center="WC1",
+                    annual_capacity_tons=1200.0,
+                    utilization_target=0.5,
+                )
+            ]
+            routings = [
+                RoutingRecord(
+                    product="P1",
+                    product_family=None,
+                    work_center="WC1",
+                    priority=1,
+                    eligible_flag=True,
+                    route_type="Primary",
+                ),
+                RoutingRecord(
+                    product="P1",
+                    product_family=None,
+                    work_center="TOL1",
+                    priority=3,
+                    eligible_flag=True,
+                    route_type="Toller",
+                ),
             ]
             results = [
                 AllocationResult(
@@ -261,7 +337,7 @@ class RegressionTests(unittest.TestCase):
                     demand_tons=100.0,
                     allocated_tons=60.0,
                     outsourced_tons=0.0,
-                    unmet_tons=40.0,
+                    unmet_tons=20.0,
                     capacity_share_pct=60.0,
                 ),
                 AllocationResult(
@@ -285,6 +361,8 @@ class RegressionTests(unittest.TestCase):
             out_path = write_results(
                 results=results,
                 loads=loads,
+                capacities=capacities,
+                routings=routings,
                 config=config,
                 issues=issues,
                 months=["2025-01", "2025-02"],
@@ -328,6 +406,12 @@ class RegressionTests(unittest.TestCase):
                 "Run_Info",
             }
             self.assertTrue(expected_sheets.issubset(set(workbook.sheetnames)))
+            self.assertIn("_Dashboard_Fact", workbook.sheetnames)
+            self.assertEqual(workbook["_Dashboard_Fact"].sheet_state, "hidden")
+            dashboard_ws = workbook["Dashboard"]
+            self.assertEqual(dashboard_ws["H2"].value, "WorkCenter Filter")
+            self.assertEqual(dashboard_ws["H3"].value, "Selection Mode")
+            self.assertEqual(dashboard_ws["I3"].value, "All")
             allocation_summary_ws = workbook["Allocation_Summary"]
             allocation_summary_headers = [
                 allocation_summary_ws.cell(1, idx).value
@@ -346,6 +430,12 @@ class RegressionTests(unittest.TestCase):
                 for idx in range(1, unmet_summary_ws.max_column + 1)
             ]
             self.assertIn("PlannerName", unmet_summary_headers)
+            detail_ws = workbook["Allocation_Detail"]
+            detail_headers = [detail_ws.cell(1, idx).value for idx in range(1, detail_ws.max_column + 1)]
+            detail_capacity_idx = detail_headers.index("CapacityShare_Pct") + 1
+            self.assertAlmostEqual(detail_ws.cell(2, detail_capacity_idx).value, 0.6, places=6)
+            wc_load_ws = workbook["WC_Load_Pct"]
+            self.assertAlmostEqual(wc_load_ws["B2"].value, 0.8, places=6)
             workbook.close()
 
     def test_write_results_preserves_totals_after_planner_traceability_split(self):
@@ -369,6 +459,7 @@ class RegressionTests(unittest.TestCase):
                     product_family="F1",
                     plant="PLT1",
                     forecast_tons=60.0,
+                    resource_group_owner="WC1",
                 ),
                 LoadRecord(
                     month="2025-01",
@@ -377,7 +468,16 @@ class RegressionTests(unittest.TestCase):
                     product_family="F1",
                     plant="PLT1",
                     forecast_tons=40.0,
+                    resource_group_owner="WC1",
                 ),
+            ]
+            capacities = [
+                CapacityRecord(
+                    product="P1",
+                    work_center="WC1",
+                    annual_capacity_tons=1200.0,
+                    utilization_target=0.5,
+                )
             ]
             results = [
                 AllocationResult(
@@ -392,7 +492,7 @@ class RegressionTests(unittest.TestCase):
                     demand_tons=100.0,
                     allocated_tons=60.0,
                     outsourced_tons=0.0,
-                    unmet_tons=40.0,
+                    unmet_tons=20.0,
                     capacity_share_pct=60.0,
                 ),
                 AllocationResult(
@@ -415,6 +515,8 @@ class RegressionTests(unittest.TestCase):
             out_path = write_results(
                 results=results,
                 loads=loads,
+                capacities=capacities,
+                routings=[],
                 config=config,
                 issues=[],
                 months=["2025-01", "2025-02"],
@@ -585,6 +687,7 @@ class RegressionTests(unittest.TestCase):
                         product_family="F1",
                         plant="PLT1",
                         forecast_tons=100.0,
+                        resource_group_owner="WC1",
                     )
                 ],
                 "ModeB": [
@@ -595,13 +698,55 @@ class RegressionTests(unittest.TestCase):
                         product_family="F1",
                         plant="PLT1",
                         forecast_tons=100.0,
+                        resource_group_owner="WC1",
                     )
+                ],
+            }
+            mode_capacities = {
+                "ModeA": [
+                    CapacityRecord(
+                        product="P1",
+                        work_center="WC1",
+                        annual_capacity_tons=1200.0,
+                        utilization_target=0.5,
+                    )
+                ],
+                "ModeB": [
+                    CapacityRecord(
+                        product="P1",
+                        work_center="WC1",
+                        annual_capacity_tons=1200.0,
+                        utilization_target=0.5,
+                    )
+                ],
+            }
+            mode_routings = {
+                "ModeA": [],
+                "ModeB": [
+                    RoutingRecord(
+                        product="P1",
+                        product_family=None,
+                        work_center="WC1",
+                        priority=1,
+                        eligible_flag=True,
+                        route_type="Primary",
+                    ),
+                    RoutingRecord(
+                        product="P1",
+                        product_family=None,
+                        work_center="TOL1",
+                        priority=3,
+                        eligible_flag=True,
+                        route_type="Toller",
+                    ),
                 ],
             }
 
             out_path = write_mode_comparison_summary(
                 mode_results={"ModeA": mode_a_results, "ModeB": mode_b_results},
                 mode_loads=mode_loads,
+                mode_capacities=mode_capacities,
+                mode_routings=mode_routings,
                 config=config,
                 months=["2025-01", "2025-02"],
                 metrics_by_mode={
@@ -643,7 +788,252 @@ class RegressionTests(unittest.TestCase):
                 r"^Summary of Mode A and Mode B_\d{8}_\d{6}\.xlsx$",
             )
             self.assertTrue(expected_sheets.issubset(set(workbook.sheetnames)))
+            self.assertIn("_Dashboard_Fact", workbook.sheetnames)
+            self.assertEqual(workbook["_Dashboard_Fact"].sheet_state, "hidden")
+            executive_ws = workbook["Executive_Comparison"]
+            self.assertEqual(executive_ws["P2"].value, "WorkCenter Filter")
+            self.assertEqual(executive_ws["Q3"].value, "All")
             workbook.close()
+
+    def test_validate_rejects_planner_product_with_multiple_resources(self):
+        loads = [
+            LoadRecord(
+                month="2025-01",
+                planner_name="PlannerA",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=10.0,
+                resource_group_owner="WC1",
+            ),
+            LoadRecord(
+                month="2025-02",
+                planner_name="PlannerA",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=12.0,
+                resource_group_owner="WC2",
+            ),
+        ]
+        capacities = [
+            CapacityRecord(product="P1", work_center="WC1", annual_capacity_tons=120.0, utilization_target=1.0),
+            CapacityRecord(product="P1", work_center="WC2", annual_capacity_tons=120.0, utilization_target=1.0),
+        ]
+
+        issues = validate(loads, capacities, [], mode="ModeA")
+
+        self.assertIn(("ERROR", "LoadPlannerProductMultiResource"), {(i.severity, i.check) for i in issues})
+
+    def test_mode_a_pressure_load_assigns_unmet_by_planner_resource(self):
+        loads = [
+            LoadRecord(
+                month="2025-01",
+                planner_name="PlannerA",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=60.0,
+                resource_group_owner="WC1",
+            ),
+            LoadRecord(
+                month="2025-01",
+                planner_name="PlannerB",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=40.0,
+                resource_group_owner="WC2",
+            ),
+        ]
+        capacities = [
+            CapacityRecord(product="P1", work_center="WC1", annual_capacity_tons=1200.0, utilization_target=0.5),
+            CapacityRecord(product="P1", work_center="WC2", annual_capacity_tons=1200.0, utilization_target=0.5),
+        ]
+        results = [
+            AllocationResult(
+                month="2025-01",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                allocation_type="Internal",
+                work_center="WC1",
+                route_type="Capacity",
+                priority=1,
+                demand_tons=100.0,
+                allocated_tons=50.0,
+                outsourced_tons=0.0,
+                unmet_tons=50.0,
+                capacity_share_pct=100.0,
+            ),
+            AllocationResult(
+                month="2025-01",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                allocation_type="Unmet",
+                work_center="[UNALLOCATED]",
+                route_type="N/A",
+                priority=99,
+                demand_tons=100.0,
+                allocated_tons=0.0,
+                outsourced_tons=0.0,
+                unmet_tons=50.0,
+                capacity_share_pct=0.0,
+            ),
+        ]
+
+        wc_load_df = build_pressure_load_frame("ModeA", results, loads, capacities, [], ["2025-01"])
+        by_wc = {row["WorkCenter"]: row["2025-01"] for _, row in wc_load_df.iterrows()}
+
+        self.assertAlmostEqual(by_wc["WC1"], 0.8, places=6)
+        self.assertAlmostEqual(by_wc["WC2"], 0.2, places=6)
+
+    def test_mode_b_pressure_load_uses_lp_for_no_routing_unmet(self):
+        loads = [
+            LoadRecord(
+                month="2025-01",
+                planner_name="PlannerA",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=100.0,
+                resource_group_owner="WC1",
+            ),
+        ]
+        capacities = [
+            CapacityRecord(product="P1", work_center="WC1", annual_capacity_tons=1200.0, utilization_target=0.5),
+            CapacityRecord(product="P1", work_center="WC2", annual_capacity_tons=1200.0, utilization_target=0.5),
+        ]
+        results = [
+            AllocationResult(
+                month="2025-01",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                allocation_type="Internal",
+                work_center="WC1",
+                route_type="Capacity",
+                priority=1,
+                demand_tons=100.0,
+                allocated_tons=90.0,
+                outsourced_tons=0.0,
+                unmet_tons=10.0,
+                capacity_share_pct=180.0,
+            ),
+            AllocationResult(
+                month="2025-01",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                allocation_type="Unmet",
+                work_center="[UNALLOCATED]",
+                route_type="N/A",
+                priority=99,
+                demand_tons=100.0,
+                allocated_tons=0.0,
+                outsourced_tons=0.0,
+                unmet_tons=10.0,
+                capacity_share_pct=0.0,
+            ),
+        ]
+
+        wc_load_df = build_pressure_load_frame("ModeB", results, loads, capacities, [], ["2025-01"])
+        by_wc = {row["WorkCenter"]: row["2025-01"] for _, row in wc_load_df.iterrows()}
+
+        self.assertAlmostEqual(by_wc["WC1"], 0.9, places=6)
+        self.assertAlmostEqual(by_wc["WC2"], 0.1, places=6)
+
+    def test_dashboard_fact_frame_assigns_mode_b_outsourced_to_toller(self):
+        loads = [
+            LoadRecord(
+                month="2025-01",
+                planner_name="PlannerA",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=100.0,
+                resource_group_owner="WC1",
+            ),
+        ]
+        capacities = [
+            CapacityRecord(product="P1", work_center="WC1", annual_capacity_tons=1200.0, utilization_target=1.0),
+        ]
+        routings = [
+            RoutingRecord(
+                product="P1",
+                product_family=None,
+                work_center="WC1",
+                priority=1,
+                eligible_flag=True,
+                route_type="Primary",
+            ),
+            RoutingRecord(
+                product="P1",
+                product_family=None,
+                work_center="TOL1",
+                priority=3,
+                eligible_flag=True,
+                route_type="Toller",
+            ),
+        ]
+        results = [
+            AllocationResult(
+                month="2025-01",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                allocation_type="Internal",
+                work_center="WC1",
+                route_type="Primary",
+                priority=1,
+                demand_tons=100.0,
+                allocated_tons=60.0,
+                outsourced_tons=0.0,
+                unmet_tons=20.0,
+                capacity_share_pct=60.0,
+            ),
+            AllocationResult(
+                month="2025-01",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                allocation_type="Outsourced",
+                work_center="[OUTSOURCED]",
+                route_type="Toller",
+                priority=99,
+                demand_tons=100.0,
+                allocated_tons=0.0,
+                outsourced_tons=20.0,
+                unmet_tons=20.0,
+                capacity_share_pct=0.0,
+            ),
+            AllocationResult(
+                month="2025-01",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                allocation_type="Unmet",
+                work_center="[UNALLOCATED]",
+                route_type="N/A",
+                priority=99,
+                demand_tons=100.0,
+                allocated_tons=0.0,
+                outsourced_tons=0.0,
+                unmet_tons=20.0,
+                capacity_share_pct=0.0,
+            ),
+        ]
+
+        fact_df = build_dashboard_fact_frame("ModeB", results, loads, capacities, routings)
+        by_wc = {
+            row["WorkCenter"]: row
+            for _, row in fact_df.iterrows()
+        }
+
+        self.assertAlmostEqual(by_wc["WC1"]["Internal_Tons"], 60.0, places=4)
+        self.assertAlmostEqual(by_wc["WC1"]["Unmet_Tons"], 20.0, places=4)
+        self.assertAlmostEqual(by_wc["TOL1"]["Outsourced_Tons"], 20.0, places=4)
 
 
 if __name__ == "__main__":

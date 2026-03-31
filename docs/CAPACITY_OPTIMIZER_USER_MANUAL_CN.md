@@ -1,6 +1,6 @@
 # Chemical Capacity Optimizer 使用手册
 
-版本：v1.1.2  
+版本：v1.1.3  
 适用对象：客户端用户、内部实施人员、开发维护人员
 
 ---
@@ -127,8 +127,20 @@ Tooling Control Panel\Capacity_Optimizer_Control.xlsx
 
 - `Deployment_Steps`
 - `Instructions`
+- `License`
 
 然后在 `Control_Panel` 中填写或确认参数。
+
+`License` 页会显示当前检测到的授权信息，包括：
+
+- `License_Name`
+- `License_Mode`
+- `License_Type`
+- `Issue_Date`
+- `Expiry_Date`
+- `Machine_Name`
+
+如果更换了 `license.json`，再次运行工具后，程序会尽量自动刷新这张页。
 
 #### Step 6：保存 Excel 后运行
 
@@ -392,6 +404,99 @@ Yes
 - `Planner_Product_Month`
 - `Run_Info`
 
+#### Dashboard 的 WorkCenter 筛选
+
+从当前版本起，以下页面支持按 `WorkCenter` 过滤 Dashboard 数据：
+
+- `ModeA` 结果 workbook 的 `Dashboard`
+- `ModeB` 结果 workbook 的 `Dashboard`
+- `Summary of Mode A and Mode B` workbook 的 `Executive_Comparison`
+
+使用方式如下：
+
+1. 在页面右上角找到 `WorkCenter Filter`
+2. `Selection Mode` 选择：
+   - `All`：显示当前 workbook 的全量 Dashboard 数据
+   - `Filtered`：只显示被选中的 `WorkCenter`
+3. 在 `WorkCenter 1` 到 `WorkCenter 8` 的下拉框中选择一个或多个资源
+4. Excel 重算后，Dashboard 上的 KPI、供给结构图、比较图和结论文字会一起变化
+
+补充说明：
+
+- 第一版筛选只联动 `Dashboard` / `Executive_Comparison` 页面
+- 其他分析页如 `Monthly_Trend`、`Bottleneck`、`WC_Heatmap`、`Product_Risk` 仍保持全量显示
+- 如果要恢复全量视图，把 `Selection Mode` 改回 `All`
+
+#### 热力图、瓶颈与产能百分比的显示口径
+
+从当前版本起，所有与产能百分比相关的显示口径已经统一调整为**按名义月产能显示**：
+
+```text
+名义月产能 = Annual_Capacity_Tons / 12
+```
+
+这意味着：
+
+- `Utilization_Target` 仍然用于优化求解时限制可用产能
+- 但报表中的 `%` 不再按乘完 `Utilization_Target` 后的有效产能显示
+
+例如：
+
+- 如果某条资源的名义月产能是 `100`
+- `Utilization_Target = 0.88`
+- 优化可用产能仍然是 `88`
+- 但如果实际分配量为 `88`
+- 报表现在显示为 `88%`
+- 不再显示为 `100%`
+
+当前影响到的主要输出包括：
+
+- `Allocation_Detail` 中的 `CapacityShare_Pct`
+- `WC_Load_Pct`
+- `Bottleneck` 页中的负荷百分比
+- `WC_Heatmap`
+- `Summary` 中与 workcenter 负荷相关的比较页
+
+#### 热力图和瓶颈页中的 `Unmet` 口径
+
+热力图和瓶颈页当前显示的是**资源压力口径**，不是单纯的“已分配内部量”。
+
+##### ModeA
+
+`WC_Heatmap` / `Bottleneck` 的压力按以下方式计算：
+
+```text
+Internal Allocation + Assigned Unmet
+```
+
+其中 `Unmet` 的归属规则为：
+
+- 如果某个 `Product` 最终只对应一个 planner-resource 责任资源，则全部 `Unmet` 归到该资源
+- 如果多个 planner 对同一个 `Product` 定义了不同资源，则先按 planner 的需求吨位占比拆分 `Unmet`，再归到各自资源
+
+##### ModeB
+
+`WC_Heatmap` / `Bottleneck` 同样显示：
+
+```text
+Internal Allocation + Assigned Unmet
+```
+
+注意：
+
+- `Outsourced` **不进入**热力图和瓶颈页
+- `Outsourced` 仍会出现在 `Dashboard` 和其他结果汇总中
+
+ModeB 中 `Unmet` 的归属规则为：
+
+- 如果 `Product` 在 `master_routing` 中有 product-level `Primary`，则 `Unmet -> Primary`
+- 如果 `Product` 不在 `master_routing` 中，则忽略 planner，基于 `master_capacity` 中该 `Product` 的所有资源，用 OR-Tools 求一个最小化最大资源压力的最优分配，再把 `Unmet` 分配回这些资源
+
+因此，当前热力图和瓶颈页中的负荷百分比：
+
+- 可以高于 `100%`
+- 高于 `100%` 表示该资源在名义产能口径下已经存在真实压力溢出
+
 ---
 
 ### 4.8 客户端常见问题
@@ -644,8 +749,8 @@ git push
 #### 正式版本发布
 
 ```powershell
-git tag v1.1.2
-git push origin v1.1.2
+git tag v1.1.3
+git push origin v1.1.3
 ```
 
 #### 建议的提交前检查

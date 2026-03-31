@@ -537,7 +537,7 @@ def _aggregate_load_records(records: List[LoadRecord]) -> List[LoadRecord]:
                 plant=_merge_text_values(existing.plant, r.plant),
                 forecast_tons=existing.forecast_tons + r.forecast_tons,
                 scenario=existing.scenario,
-                resource_group_owner=existing.resource_group_owner,
+                resource_group_owner=_merge_text_values(existing.resource_group_owner, r.resource_group_owner) or None,
                 scenario_version=existing.scenario_version,
                 comment=existing.comment,
                 source_file=existing.source_file,

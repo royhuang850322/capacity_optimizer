@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from contextlib import contextmanager
 
+from openpyxl import load_workbook
+
 from license_admin.export_customer_package import build_customer_package
 
 
@@ -82,6 +84,11 @@ class DeliveryPackageTests(unittest.TestCase):
             with open(os.path.join(package_path, "licenses", "active", "license.json"), "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
             self.assertEqual(payload["license_id"], "LIC-001")
+            workbook = load_workbook(os.path.join(package_path, "Tooling Control Panel", "Capacity_Optimizer_Control.xlsx"), data_only=True)
+            license_ws = workbook["License"]
+            self.assertEqual(license_ws["B5"].value, "Invalid")
+            self.assertEqual(license_ws["B6"].value, "LIC-001")
+            workbook.close()
 
 
 if __name__ == "__main__":

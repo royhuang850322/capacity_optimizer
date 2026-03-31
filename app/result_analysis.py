@@ -260,7 +260,7 @@ def build_executive_insights(
     if not wc_summary.empty:
         bottleneck = wc_summary.iloc[0]
         lines.append(
-            f"The tightest work center is {bottleneck['WorkCenter']}, peaking at {bottleneck['PeakLoadPct']:.1%} "
+            f"The highest-pressure work center is {bottleneck['WorkCenter']}, peaking at {bottleneck['PeakLoadPct']:.1%} "
             f"and running above 95% in {int(bottleneck['Over95Months'])} month(s)."
         )
 

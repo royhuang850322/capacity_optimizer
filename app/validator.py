@@ -56,6 +56,13 @@ def _row_ref(record: LoadRecord) -> str:
     return f"[{' '.join(parts)}] " if parts else ""
 
 
+def _split_merged_text(value: str | None) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    return [part.strip() for part in text.split("|") if part.strip()]
+
+
 def _routing_match_summary(
     record: LoadRecord,
     product_wcs: Set[str],
@@ -91,6 +98,7 @@ def _routing_match_summary(
 
 def _check_load_records(loads: List[LoadRecord]) -> List[ValidationIssue]:
     issues: List[ValidationIssue] = []
+    planner_product_resources: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
 
     for record in loads:
         ref = _row_ref(record)
@@ -132,6 +140,29 @@ def _check_load_records(loads: List[LoadRecord]) -> List[ValidationIssue]:
                 detail=(
                     f"{ref}Forecast_Tons=0 for product {record.product}, "
                     f"month={record.month}, planner={record.planner_name}."
+                ),
+            ))
+
+        resources = _split_merged_text(record.resource_group_owner)
+        if not resources:
+            issues.append(ValidationIssue(
+                severity="ERROR",
+                check="LoadResourceMissing",
+                detail=(
+                    f"{ref}Missing Resource for product={record.product}, "
+                    f"month={record.month}, planner={record.planner_name}."
+                ),
+            ))
+        planner_product_resources[(record.planner_name, record.product)].update(resources)
+
+    for (planner_name, product), resources in sorted(planner_product_resources.items()):
+        if len(resources) > 1:
+            issues.append(ValidationIssue(
+                severity="ERROR",
+                check="LoadPlannerProductMultiResource",
+                detail=(
+                    f"Planner '{planner_name}' maps product '{product}' to multiple Resources: "
+                    f"{sorted(resources)}."
                 ),
             ))
 
@@ -218,6 +249,7 @@ def _check_cross_coverage(
                     check="NoCoverageCapacity",
                     detail=f"Product '{product}' in load has no capacity record.",
                 ))
+        issues.extend(_check_planner_resource_capacity_coverage(loads, cap_keys))
         return issues
 
     cap_wcs_by_product: Dict[str, Set[str]] = {}
@@ -248,6 +280,10 @@ def _check_cross_coverage(
                 check="NoCoverageCapacity",
                 detail=f"Product '{product}' in load has no capacity record.",
             ))
+
+    issues.extend(_check_planner_resource_capacity_coverage(loads, cap_keys))
+    issues.extend(_check_mode_b_product_primary_routes(load_products, routings))
+    issues.extend(_check_mode_b_product_toller_routes(load_products, routings))
 
     for record in loads:
         ref = _row_ref(record)
@@ -290,6 +326,97 @@ def _check_cross_coverage(
                     f"{routing_summary}; combined eligible routes={sorted(eligible_wcs)}; "
                     f"available capacity routes={available_cap_wcs}."
                 ),
+            ))
+
+    return issues
+
+
+def _check_planner_resource_capacity_coverage(
+    loads: List[LoadRecord],
+    cap_keys: Set[Tuple[str, str]],
+) -> List[ValidationIssue]:
+    issues: List[ValidationIssue] = []
+    seen: Set[Tuple[str, str]] = set()
+
+    for record in loads:
+        for resource in _split_merged_text(record.resource_group_owner):
+            key = (record.product, resource)
+            if key in seen:
+                continue
+            seen.add(key)
+            if key not in cap_keys:
+                issues.append(ValidationIssue(
+                    severity="ERROR",
+                    check="PlannerResourceMissingInCapacity",
+                    detail=(
+                        f"Planner load references Product='{record.product}' / Resource='{resource}' "
+                        "but no matching master_capacity row exists."
+                    ),
+                ))
+    return issues
+
+
+def _check_mode_b_product_primary_routes(
+    load_products: Set[str],
+    routings: List[RoutingRecord],
+) -> List[ValidationIssue]:
+    issues: List[ValidationIssue] = []
+    product_level_rows: Dict[str, List[RoutingRecord]] = defaultdict(list)
+    for routing in routings:
+        if routing.product:
+            product_level_rows[routing.product].append(routing)
+
+    for product in sorted(load_products):
+        rows = product_level_rows.get(product, [])
+        if not rows:
+            continue
+
+        primary_wcs = {
+            row.work_center
+            for row in rows
+            if row.eligible_flag and row.route_type.strip().lower() == "primary"
+        }
+        if len(primary_wcs) == 0:
+            issues.append(ValidationIssue(
+                severity="ERROR",
+                check="RoutingPrimaryMissing",
+                detail=f"Product '{product}' has product-level routing rows but no eligible Primary route.",
+            ))
+        elif len(primary_wcs) > 1:
+            issues.append(ValidationIssue(
+                severity="ERROR",
+                check="RoutingPrimaryDuplicate",
+                detail=f"Product '{product}' has multiple eligible Primary routes: {sorted(primary_wcs)}.",
+            ))
+
+    return issues
+
+
+def _check_mode_b_product_toller_routes(
+    load_products: Set[str],
+    routings: List[RoutingRecord],
+) -> List[ValidationIssue]:
+    issues: List[ValidationIssue] = []
+    product_level_rows: Dict[str, List[RoutingRecord]] = defaultdict(list)
+    for routing in routings:
+        if routing.product:
+            product_level_rows[routing.product].append(routing)
+
+    for product in sorted(load_products):
+        rows = product_level_rows.get(product, [])
+        if not rows:
+            continue
+
+        toller_wcs = {
+            row.work_center
+            for row in rows
+            if row.eligible_flag and row.route_type.strip().lower() == "toller"
+        }
+        if len(toller_wcs) > 1:
+            issues.append(ValidationIssue(
+                severity="ERROR",
+                check="RoutingTollerDuplicate",
+                detail=f"Product '{product}' has multiple eligible Toller routes: {sorted(toller_wcs)}.",
             ))
 
     return issues

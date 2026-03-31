@@ -20,11 +20,23 @@ from openpyxl.chart.label import DataLabelList
 from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
 
-from app.models import AllocationResult, Config, LoadRecord, ValidationIssue
+from app.load_pressure import (
+    build_dashboard_fact_frame,
+    build_pressure_load_frame,
+    build_raw_capacity_map,
+    compute_display_capacity_share_pct,
+)
+from app.models import (
+    AllocationResult,
+    CapacityRecord,
+    Config,
+    LoadRecord,
+    RoutingRecord,
+    ValidationIssue,
+)
 from app.result_analysis import (
-    build_executive_insights,
-    build_mode_comparison_frame,
     build_result_analysis,
 )
 
@@ -47,6 +59,7 @@ BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 PCT_FMT = "0.0%"
 TONS_FMT = "#,##0.0"
 INT_FMT = "#,##0"
+FILTER_SLOTS = 8
 
 
 def build_output_path(config: Config, mode: str) -> str:
@@ -201,12 +214,15 @@ def _plannerize_results(
 def write_results(
     results: List[AllocationResult],
     loads: Optional[List[LoadRecord]],
+    capacities: Optional[List[CapacityRecord]],
+    routings: Optional[List[RoutingRecord]],
     config: Config,
     issues: List[ValidationIssue],
     months: List[str],
     mode: str = "ModeA",
     toller_products: Optional[set] = None,
     metrics_by_mode: Optional[dict[str, dict[str, Any]]] = None,
+    dashboard_facts_by_mode: Optional[dict[str, pd.DataFrame]] = None,
 ) -> str:
     """
     Write a complete Excel report workbook.
@@ -220,8 +236,18 @@ def write_results(
 
     wb = Workbook()
     wb.remove(wb.active)
+    _enable_formula_recalc(wb)
 
-    artifact = _build_mode_artifact(results, loads, config, months, mode)
+    artifact = _build_mode_artifact(
+        results,
+        loads,
+        capacities,
+        routings,
+        config,
+        months,
+        mode,
+        dashboard_fact=(dashboard_facts_by_mode or {}).get(mode),
+    )
     df_detail = artifact["df_detail"]
     wc_load_df = artifact["wc_load_df"]
     run_info_df = artifact["run_info_df"]
@@ -231,7 +257,14 @@ def write_results(
     all_metrics = dict(metrics_by_mode or {})
     all_metrics.setdefault(mode, preview_metrics)
 
-    _write_dashboard(wb, mode, analysis, preview_metrics, all_metrics)
+    _write_dashboard(
+        wb,
+        mode,
+        analysis,
+        preview_metrics,
+        all_metrics,
+        dashboard_facts_by_mode or {mode: artifact["dashboard_fact"]},
+    )
     _write_monthly_analysis(wb, analysis)
     _write_bottleneck_analysis(wb, analysis)
     _write_wc_heatmap(wb, analysis)
@@ -258,6 +291,9 @@ def write_mode_comparison_summary(
     months: List[str],
     metrics_by_mode: Optional[dict[str, dict[str, Any]]] = None,
     mode_loads: Optional[dict[str, List[LoadRecord]]] = None,
+    mode_capacities: Optional[dict[str, List[CapacityRecord]]] = None,
+    mode_routings: Optional[dict[str, List[RoutingRecord]]] = None,
+    dashboard_facts_by_mode: Optional[dict[str, pd.DataFrame]] = None,
 ) -> str:
     """
     Write a standalone comparison workbook when both ModeA and ModeB are run.
@@ -271,7 +307,16 @@ def write_mode_comparison_summary(
     out_path = os.path.join(config.output_folder, f"Summary of Mode A and Mode B_{ts}.xlsx")
 
     artifacts = {
-        mode: _build_mode_artifact(mode_results[mode], mode_loads.get(mode) if mode_loads else None, config, months, mode)
+        mode: _build_mode_artifact(
+            mode_results[mode],
+            mode_loads.get(mode) if mode_loads else None,
+            mode_capacities.get(mode) if mode_capacities else None,
+            mode_routings.get(mode) if mode_routings else None,
+            config,
+            months,
+            mode,
+            dashboard_fact=(dashboard_facts_by_mode or {}).get(mode),
+        )
         for mode in ("ModeA", "ModeB")
     }
     comparison_metrics = dict(metrics_by_mode or {})
@@ -280,6 +325,7 @@ def write_mode_comparison_summary(
 
     wb = Workbook()
     wb.remove(wb.active)
+    _enable_formula_recalc(wb)
 
     _write_executive_comparison(wb, artifacts, comparison_metrics)
     _write_monthly_comparison(wb, artifacts)
@@ -293,7 +339,10 @@ def write_mode_comparison_summary(
     return out_path
 
 
-def _results_to_df(results: List[AllocationResult]) -> pd.DataFrame:
+def _results_to_df(
+    results: List[AllocationResult],
+    raw_capacity_map: dict[tuple[str, str], float],
+) -> pd.DataFrame:
     rows = []
     columns = [
         "Month",
@@ -327,7 +376,12 @@ def _results_to_df(results: List[AllocationResult]) -> pd.DataFrame:
                 "Allocated_Tons": result.allocated_tons,
                 "Outsourced_Tons": result.outsourced_tons,
                 "Unmet_Tons": result.unmet_tons,
-                "CapacityShare_Pct": result.capacity_share_pct / 100.0,
+                "CapacityShare_Pct": compute_display_capacity_share_pct(
+                    product=result.product,
+                    work_center=result.work_center,
+                    allocated_tons=result.allocated_tons,
+                    raw_capacity_map=raw_capacity_map,
+                ) / 100.0,
             }
         )
     return pd.DataFrame(rows, columns=columns)
@@ -336,22 +390,43 @@ def _results_to_df(results: List[AllocationResult]) -> pd.DataFrame:
 def _build_mode_artifact(
     results: List[AllocationResult],
     loads: Optional[List[LoadRecord]],
+    capacities: Optional[List[CapacityRecord]],
+    routings: Optional[List[RoutingRecord]],
     config: Config,
     months: List[str],
     mode: str,
+    dashboard_fact: Optional[pd.DataFrame] = None,
 ) -> dict[str, Any]:
+    capacities = capacities or []
+    routings = routings or []
+    raw_capacity_map = build_raw_capacity_map(capacities)
     plannerized_results = _plannerize_results(results, loads)
-    df_detail = _results_to_df(plannerized_results)
-    wc_load_df = _build_wc_load_frame(df_detail, months)
+    df_detail = _results_to_df(plannerized_results, raw_capacity_map)
+    wc_load_df = build_pressure_load_frame(
+        mode=mode,
+        results=results,
+        loads=loads or [],
+        capacities=capacities,
+        routings=routings,
+        months=months,
+    )
     run_info_df = _build_run_info_df(config, mode)
     analysis = build_result_analysis(df_detail, wc_load_df, run_info_df)
     metrics = _build_preview_metrics(mode, analysis, results, months)
+    dashboard_fact = dashboard_fact if dashboard_fact is not None else build_dashboard_fact_frame(
+        mode=mode,
+        results=results,
+        loads=loads or [],
+        capacities=capacities,
+        routings=routings,
+    )
     return {
         "df_detail": df_detail,
         "wc_load_df": wc_load_df,
         "run_info_df": run_info_df,
         "analysis": analysis,
         "metrics": metrics,
+        "dashboard_fact": dashboard_fact,
     }
 
 
@@ -399,7 +474,7 @@ def _build_run_info_df(config: Config, mode: str) -> pd.DataFrame:
         ("License_Binding_Mode", getattr(config, "license_binding_mode", "")),
         ("License_Machine_Label", getattr(config, "license_machine_label", "")),
         ("Notes", config.notes or ""),
-        ("Tool_Version", "1.1.2"),
+        ("Tool_Version", "1.1.3"),
     ]
     return pd.DataFrame(rows, columns=["Parameter", "Value"])
 
@@ -430,15 +505,249 @@ def _build_preview_metrics(
     }
 
 
+def _enable_formula_recalc(wb: Workbook) -> None:
+    try:
+        wb.calculation.fullCalcOnLoad = True
+        wb.calculation.forceFullCalc = True
+    except Exception:
+        pass
+
+
+def _combine_dashboard_facts(dashboard_facts_by_mode: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for mode_name, fact_df in (dashboard_facts_by_mode or {}).items():
+        if fact_df is None or fact_df.empty:
+            continue
+        frame = fact_df.copy()
+        if "Mode" not in frame.columns:
+            frame.insert(0, "Mode", mode_name)
+        frames.append(frame)
+
+    if not frames:
+        return pd.DataFrame(
+            columns=[
+                "Mode",
+                "WorkCenter",
+                "Demand_Tons",
+                "Internal_Tons",
+                "Outsourced_Tons",
+                "Unmet_Tons",
+                "Supplied_Tons",
+            ]
+        )
+
+    combined = pd.concat(frames, ignore_index=True)
+    for column in ("Demand_Tons", "Internal_Tons", "Outsourced_Tons", "Unmet_Tons", "Supplied_Tons"):
+        combined[column] = pd.to_numeric(combined[column], errors="coerce").fillna(0.0)
+    combined["Mode"] = combined["Mode"].astype(str)
+    combined["WorkCenter"] = combined["WorkCenter"].astype(str)
+    combined = (
+        combined.groupby(["Mode", "WorkCenter"], as_index=False)[
+            ["Demand_Tons", "Internal_Tons", "Outsourced_Tons", "Unmet_Tons", "Supplied_Tons"]
+        ]
+        .sum()
+        .sort_values(["Mode", "WorkCenter"], key=lambda col: col.map(str.casefold) if col.name in {"Mode", "WorkCenter"} else col)
+    )
+    return combined
+
+
+def _write_dashboard_fact_sheet(
+    wb: Workbook,
+    dashboard_facts_by_mode: dict[str, pd.DataFrame],
+    sheet_name: str = "_Dashboard_Fact",
+) -> dict[str, Any]:
+    fact_df = _combine_dashboard_facts(dashboard_facts_by_mode)
+    ws = wb.create_sheet(sheet_name)
+
+    if fact_df.empty:
+        fact_df = pd.DataFrame(
+            [
+                {
+                    "Mode": "",
+                    "WorkCenter": "",
+                    "Demand_Tons": 0.0,
+                    "Internal_Tons": 0.0,
+                    "Outsourced_Tons": 0.0,
+                    "Unmet_Tons": 0.0,
+                    "Supplied_Tons": 0.0,
+                }
+            ]
+        )
+
+    layout = _write_table(
+        ws,
+        fact_df,
+        start_row=1,
+        start_col=1,
+        num_formats={
+            "Demand_Tons": TONS_FMT,
+            "Internal_Tons": TONS_FMT,
+            "Outsourced_Tons": TONS_FMT,
+            "Unmet_Tons": TONS_FMT,
+            "Supplied_Tons": TONS_FMT,
+        },
+    )
+
+    workcenters = sorted(
+        {
+            str(value).strip()
+            for value in fact_df["WorkCenter"].tolist()
+            if str(value).strip()
+        },
+        key=str.casefold,
+    )
+    list_col = 10
+    ws.cell(1, list_col).value = "WorkCenter_List"
+    if not workcenters:
+        ws.cell(2, list_col).value = ""
+        list_end_row = 2
+    else:
+        for offset, work_center in enumerate(workcenters, start=2):
+            ws.cell(offset, list_col).value = work_center
+        list_end_row = len(workcenters) + 1
+
+    ws.sheet_state = "hidden"
+    return {
+        "sheet_name": sheet_name,
+        "data_start_row": layout["start_row"] + 1,
+        "data_end_row": layout["end_row"],
+        "col_index": layout["col_index"],
+        "list_col": list_col,
+        "list_start_row": 2,
+        "list_end_row": list_end_row,
+        "workcenters": workcenters,
+    }
+
+
+def _excel_sheet_ref(sheet_name: str) -> str:
+    return f"'{sheet_name}'"
+
+
+def _sheet_range_ref(meta: dict[str, Any], column_name: str) -> str:
+    col_num = meta["col_index"][column_name]
+    col_letter = get_column_letter(col_num)
+    return (
+        f"{_excel_sheet_ref(meta['sheet_name'])}!${col_letter}${meta['data_start_row']}:${col_letter}${meta['data_end_row']}"
+    )
+
+
+def _dashboard_filtered_sum_formula(
+    meta: dict[str, Any],
+    mode_name: str,
+    metric_name: str,
+    selection_mode_ref: str,
+    selected_range_ref: str,
+) -> str:
+    value_range = _sheet_range_ref(meta, metric_name)
+    mode_range = _sheet_range_ref(meta, "Mode")
+    workcenter_range = _sheet_range_ref(meta, "WorkCenter")
+    all_formula = f'SUMIFS({value_range},{mode_range},"{mode_name}")'
+    filtered_formula = (
+        f'SUMPRODUCT(({mode_range}="{mode_name}")*({value_range})*'
+        f'(COUNTIF({selected_range_ref},{workcenter_range})>0))'
+    )
+    return f'=IF({selection_mode_ref}="All",{all_formula},{filtered_formula})'
+
+
+def _dashboard_selected_workcenter_count_formula(
+    meta: dict[str, Any],
+    selection_mode_ref: str,
+    selected_range_ref: str,
+) -> str:
+    list_col_letter = get_column_letter(meta["list_col"])
+    list_range = (
+        f"{_excel_sheet_ref(meta['sheet_name'])}!${list_col_letter}${meta['list_start_row']}:${list_col_letter}${meta['list_end_row']}"
+    )
+    return f'=IF({selection_mode_ref}="All",COUNTA({list_range}),COUNTIF({selected_range_ref},"<>"))'
+
+
+def _add_dashboard_filter_controls(
+    ws,
+    meta: dict[str, Any],
+    start_row: int,
+    start_col: int,
+    title: str = "WorkCenter Filter",
+) -> dict[str, Any]:
+    title_start = ws.cell(start_row, start_col).coordinate
+    title_end = ws.cell(start_row, start_col + 1).coordinate
+    ws.merge_cells(f"{title_start}:{title_end}")
+    title_cell = ws.cell(start_row, start_col)
+    title_cell.value = title
+    title_cell.fill = HDR_FILL
+    title_cell.font = Font(color="FFFFFF", bold=True, size=11)
+    title_cell.alignment = Alignment(horizontal="center", vertical="center")
+    title_cell.border = BORDER
+
+    selection_mode_cell = ws.cell(start_row + 1, start_col + 1)
+    ws.cell(start_row + 1, start_col).value = "Selection Mode"
+    ws.cell(start_row + 1, start_col).fill = SUBHDR_FILL
+    ws.cell(start_row + 1, start_col).font = Font(bold=True)
+    ws.cell(start_row + 1, start_col).border = BORDER
+    selection_mode_cell.value = "All"
+    selection_mode_cell.border = BORDER
+
+    selection_dv = DataValidation(type="list", formula1='"All,Filtered"', allow_blank=False)
+    selection_dv.error = "Selection Mode must be All or Filtered."
+    selection_dv.prompt = "Choose All to show the full dashboard, or Filtered to limit it to selected workcenters."
+    ws.add_data_validation(selection_dv)
+    selection_dv.add(selection_mode_cell)
+
+    list_col_letter = get_column_letter(meta["list_col"])
+    list_formula = (
+        f"={_excel_sheet_ref(meta['sheet_name'])}!${list_col_letter}${meta['list_start_row']}:${list_col_letter}${meta['list_end_row']}"
+    )
+    workcenter_dv = DataValidation(type="list", formula1=list_formula, allow_blank=True)
+    workcenter_dv.error = "Select a workcenter from the dropdown list."
+    workcenter_dv.prompt = "Pick one or more workcenters to filter the dashboard."
+    ws.add_data_validation(workcenter_dv)
+
+    selected_cells: list[str] = []
+    for offset in range(FILTER_SLOTS):
+        row_num = start_row + 2 + offset
+        label_cell = ws.cell(row_num, start_col)
+        value_cell = ws.cell(row_num, start_col + 1)
+        label_cell.value = f"WorkCenter {offset + 1}"
+        label_cell.fill = SUBHDR_FILL
+        label_cell.font = Font(bold=True)
+        label_cell.border = BORDER
+        value_cell.border = BORDER
+        workcenter_dv.add(value_cell)
+        selected_cells.append(value_cell.coordinate)
+
+    note_row = start_row + 2 + FILTER_SLOTS
+    ws.merge_cells(
+        f"{ws.cell(note_row, start_col).coordinate}:{ws.cell(note_row, start_col + 1).coordinate}"
+    )
+    ws.cell(note_row, start_col).value = (
+        "Use All for the full dashboard, or switch to Filtered and choose one or more workcenters."
+    )
+    ws.cell(note_row, start_col).font = NOTE_FONT
+    ws.cell(note_row, start_col).alignment = Alignment(wrap_text=True, vertical="top")
+
+    selection_col_letter = get_column_letter(start_col + 1)
+    return {
+        "selection_mode_cell": selection_mode_cell.coordinate,
+        "selection_mode_ref": f"${selection_col_letter}${start_row + 1}",
+        "selected_cells": selected_cells,
+        "selected_range": f"${selection_col_letter}${start_row + 2}:${selection_col_letter}${start_row + 1 + FILTER_SLOTS}",
+    }
+
+
 def _write_dashboard(
     wb: Workbook,
     mode: str,
     analysis: dict[str, Any],
     preview_metrics: dict[str, Any],
     metrics_by_mode: dict[str, dict[str, Any]],
+    dashboard_facts_by_mode: dict[str, pd.DataFrame],
 ) -> None:
     ws = wb.create_sheet("Dashboard")
     _write_sheet_title(ws, f"Executive Summary - {mode}")
+    fact_meta = _write_dashboard_fact_sheet(wb, dashboard_facts_by_mode)
+    filter_refs = _add_dashboard_filter_controls(ws, fact_meta, start_row=2, start_col=8)
+    selection_mode_ref = filter_refs["selection_mode_ref"]
+    selected_range_ref = filter_refs["selected_range"]
+    has_mode_comparison = {"ModeA", "ModeB"}.issubset(set(dashboard_facts_by_mode))
 
     ws["A2"] = f"Scenario: {analysis.get('scenario_name') or preview_metrics.get('scenario_name') or 'N/A'}"
     ws["A3"] = f"Mode: {mode}"
@@ -447,30 +756,88 @@ def _write_dashboard(
         ws[cell_ref].font = Font(color="444444", size=10)
 
     metric_rows = [
-        ("Total demand", preview_metrics["total_demand"], TONS_FMT),
-        ("Internal allocated", preview_metrics["total_internal_allocated"], TONS_FMT),
-        ("Outsourced", preview_metrics["total_outsourced"], TONS_FMT),
-        ("Residual unmet", preview_metrics["total_unmet"], TONS_FMT),
-        ("Service level", preview_metrics["service_level"] / 100.0, PCT_FMT),
-        ("Result rows", preview_metrics["result_rows"], INT_FMT),
+        (
+            "Total demand",
+            _dashboard_filtered_sum_formula(
+                fact_meta,
+                mode,
+                "Demand_Tons",
+                selection_mode_ref,
+                selected_range_ref,
+            ),
+            TONS_FMT,
+        ),
+        (
+            "Internal allocated",
+            _dashboard_filtered_sum_formula(
+                fact_meta,
+                mode,
+                "Internal_Tons",
+                selection_mode_ref,
+                selected_range_ref,
+            ),
+            TONS_FMT,
+        ),
+        (
+            "Outsourced",
+            _dashboard_filtered_sum_formula(
+                fact_meta,
+                mode,
+                "Outsourced_Tons",
+                selection_mode_ref,
+                selected_range_ref,
+            ),
+            TONS_FMT,
+        ),
+        (
+            "Residual unmet",
+            _dashboard_filtered_sum_formula(
+                fact_meta,
+                mode,
+                "Unmet_Tons",
+                selection_mode_ref,
+                selected_range_ref,
+            ),
+            TONS_FMT,
+        ),
+        ("Service level", "=IF(B7=0,0,(B8+B9)/B7)", PCT_FMT),
+        (
+            "Selected workcenters",
+            _dashboard_selected_workcenter_count_formula(
+                fact_meta,
+                selection_mode_ref,
+                selected_range_ref,
+            ),
+            INT_FMT,
+        ),
     ]
     _write_metric_block(ws, start_row=6, start_col=1, rows=metric_rows)
 
-    insights = build_executive_insights(mode, preview_metrics, metrics_by_mode, analysis)
     ws["D6"] = "Key conclusions"
     ws["D6"].font = Font(bold=True, color="1F4E79", size=11)
-    for offset, line in enumerate(insights, start=1):
+    insight_formulas = [
+        '=IF($I$3="All","- Full selection: ","- Filtered selection: ")&TEXT($B$8+$B$9,"#,##0.0")&" tons supplied out of "&TEXT($B$7,"#,##0.0")&" for a service level of "&TEXT($B$11,"0.0%")&"."',
+        '="- Internal allocated: "&TEXT($B$8,"#,##0.0")&" tons; outsourced: "&TEXT($B$9,"#,##0.0")&" tons; residual unmet: "&TEXT($B$10,"#,##0.0")&" tons."',
+        '="- Dashboard scope: "&IF($I$3="All","all available workcenters",TEXT($B$12,"0")&" selected workcenter(s)")&"."',
+        (
+            '="- '
+            + ("The comparison chart below uses the same WorkCenter filter across ModeA and ModeB." if has_mode_comparison
+               else "Use the workcenter dropdowns to focus the KPI and chart values on a specific resource subset.")
+            + '"'
+        ),
+    ]
+    for offset, line in enumerate(insight_formulas, start=1):
         cell = ws.cell(6 + offset, 4)
-        cell.value = f"- {line}"
+        cell.value = line
         cell.alignment = Alignment(wrap_text=True, vertical="top")
 
     supply_mix_df = pd.DataFrame(
         {
             "Category": ["Internal allocated", "Outsourced", "Residual unmet"],
             "Tons": [
-                preview_metrics["total_internal_allocated"],
-                preview_metrics["total_outsourced"],
-                preview_metrics["total_unmet"],
+                "=B8",
+                "=B9",
+                "=B10",
             ],
         }
     )
@@ -508,40 +875,97 @@ def _write_dashboard(
     mix_chart.dataLabels.showVal = True
     ws.add_chart(mix_chart, "D14")
 
-    comparison_df = build_mode_comparison_frame(metrics_by_mode)
-    if not comparison_df.empty:
+    if has_mode_comparison:
+        comparison_df = pd.DataFrame(
+            {
+                "Category": ["Internal allocated", "Outsourced", "Residual unmet"],
+                "ModeA": [
+                    _dashboard_filtered_sum_formula(
+                        fact_meta,
+                        "ModeA",
+                        "Internal_Tons",
+                        selection_mode_ref,
+                        selected_range_ref,
+                    ),
+                    _dashboard_filtered_sum_formula(
+                        fact_meta,
+                        "ModeA",
+                        "Outsourced_Tons",
+                        selection_mode_ref,
+                        selected_range_ref,
+                    ),
+                    _dashboard_filtered_sum_formula(
+                        fact_meta,
+                        "ModeA",
+                        "Unmet_Tons",
+                        selection_mode_ref,
+                        selected_range_ref,
+                    ),
+                ],
+                "ModeB": [
+                    _dashboard_filtered_sum_formula(
+                        fact_meta,
+                        "ModeB",
+                        "Internal_Tons",
+                        selection_mode_ref,
+                        selected_range_ref,
+                    ),
+                    _dashboard_filtered_sum_formula(
+                        fact_meta,
+                        "ModeB",
+                        "Outsourced_Tons",
+                        selection_mode_ref,
+                        selected_range_ref,
+                    ),
+                    _dashboard_filtered_sum_formula(
+                        fact_meta,
+                        "ModeB",
+                        "Unmet_Tons",
+                        selection_mode_ref,
+                        selected_range_ref,
+                    ),
+                ],
+            }
+        )
         comparison_layout = _write_table(
             ws,
             comparison_df,
             start_row=14,
             start_col=8,
-            num_formats={"Value": TONS_FMT},
+            num_formats={"ModeA": TONS_FMT, "ModeB": TONS_FMT},
         )
         comp_chart = BarChart()
         comp_chart.title = "Mode Comparison"
         comp_chart.y_axis.title = "Tons"
         comp_chart.height = 7
         comp_chart.width = 12
-        data = Reference(
-            ws,
-            min_col=comparison_layout["col_index"]["Value"],
-            min_row=comparison_layout["start_row"],
-            max_row=comparison_layout["end_row"],
+        comp_chart.add_data(
+            Reference(
+                ws,
+                min_col=comparison_layout["col_index"]["ModeA"],
+                min_row=comparison_layout["start_row"],
+                max_col=comparison_layout["col_index"]["ModeB"],
+                max_row=comparison_layout["end_row"],
+            ),
+            titles_from_data=True,
+            from_rows=False,
         )
-        cats = Reference(
-            ws,
-            min_col=comparison_layout["col_index"]["Metric"],
-            min_row=comparison_layout["start_row"] + 1,
-            max_row=comparison_layout["end_row"],
+        comp_chart.set_categories(
+            Reference(
+                ws,
+                min_col=comparison_layout["col_index"]["Category"],
+                min_row=comparison_layout["start_row"] + 1,
+                max_row=comparison_layout["end_row"],
+            )
         )
-        comp_chart.add_data(data, titles_from_data=True, from_rows=False)
-        comp_chart.set_categories(cats)
+        _apply_chart_palette(comp_chart, ["2F75B5", "ED7D31"])
         ws.add_chart(comp_chart, "K14")
     else:
         _write_note(
             ws,
             "H14",
-            "Mode comparison appears when ModeA and ModeB are run from the same control workbook session.",
+            "Mode comparison appears when ModeA and ModeB are run from the same control workbook session. "
+            "The workcenter filter already applies to the current mode KPIs and supply mix above.",
         )
 
     _autofit(ws)
@@ -554,14 +978,17 @@ def _write_executive_comparison(
 ) -> None:
     ws = wb.create_sheet("Executive_Comparison")
     ws.sheet_view.showGridLines = False
+    fact_meta = _write_dashboard_fact_sheet(
+        wb,
+        {mode: artifacts[mode]["dashboard_fact"] for mode in ("ModeA", "ModeB")},
+    )
+    filter_refs = _add_dashboard_filter_controls(ws, fact_meta, start_row=2, start_col=16)
+    selection_mode_ref = filter_refs["selection_mode_ref"]
+    selected_range_ref = filter_refs["selected_range"]
 
     mode_a = metrics_by_mode["ModeA"]
     mode_b = metrics_by_mode["ModeB"]
     scenario = mode_a.get("scenario_name") or mode_b.get("scenario_name") or "N/A"
-    service_delta_pct = mode_b["service_level"] - mode_a["service_level"]
-    unmet_delta_tons = mode_b["total_unmet"] - mode_a["total_unmet"]
-    internal_delta_tons = mode_b["total_internal_allocated"] - mode_a["total_internal_allocated"]
-    outsourced_delta_tons = mode_b["total_outsourced"] - mode_a["total_outsourced"]
 
     ws.merge_cells("A1:N1")
     ws["A1"] = "Summary of Mode A and Mode B"
@@ -582,10 +1009,8 @@ def _write_executive_comparison(
 
     ws.merge_cells("A4:F5")
     ws["A4"] = (
-        "MODE A\n"
-        "Internal-first baseline\n"
-        f"Service level: {mode_a['service_level'] / 100.0:.1%} | "
-        f"Internal allocated: {mode_a['total_internal_allocated']:,.1f} tons"
+        '="MODE A"&CHAR(10)&"Internal-first baseline"&CHAR(10)&'
+        '"Service level: "&TEXT(B14,"0.0%")&" | Internal allocated: "&TEXT(B11,"#,##0.0")&" tons"'
     )
     ws["A4"].fill = MODEA_FILL
     ws["A4"].font = Font(color="FFFFFF", bold=True, size=12)
@@ -593,10 +1018,8 @@ def _write_executive_comparison(
 
     ws.merge_cells("H4:N5")
     ws["H4"] = (
-        "MODE B\n"
-        "Expanded supply option\n"
-        f"Service level: {mode_b['service_level'] / 100.0:.1%} | "
-        f"Outsourced: {mode_b['total_outsourced']:,.1f} tons"
+        '="MODE B"&CHAR(10)&"Expanded supply option"&CHAR(10)&'
+        '"Service level: "&TEXT(C14,"0.0%")&" | Outsourced: "&TEXT(C12,"#,##0.0")&" tons"'
     )
     ws["H4"].fill = MODEB_FILL
     ws["H4"].font = Font(color="FFFFFF", bold=True, size=12)
@@ -605,7 +1028,8 @@ def _write_executive_comparison(
     ws.merge_cells("A7:N7")
     ws["A7"] = (
         "Management lens: compare service improvement, outsourced reliance, "
-        "and residual unmet reduction across the two operating modes."
+        "and residual unmet reduction across the two operating modes. "
+        "The WorkCenter filter on the right applies to every KPI and chart on this page."
     )
     ws["A7"].fill = SUBHDR_FILL
     ws["A7"].font = Font(color="44546A", italic=True, size=10)
@@ -614,39 +1038,59 @@ def _write_executive_comparison(
     metric_rows = [
         {
             "Metric": "Total demand",
-            "ModeA": mode_a["total_demand"],
-            "ModeB": mode_b["total_demand"],
-            "Delta (ModeB - ModeA)": mode_b["total_demand"] - mode_a["total_demand"],
+            "ModeA": _dashboard_filtered_sum_formula(
+                fact_meta, "ModeA", "Demand_Tons", selection_mode_ref, selected_range_ref
+            ),
+            "ModeB": _dashboard_filtered_sum_formula(
+                fact_meta, "ModeB", "Demand_Tons", selection_mode_ref, selected_range_ref
+            ),
+            "Delta (ModeB - ModeA)": "=C10-B10",
         },
         {
             "Metric": "Internal allocated",
-            "ModeA": mode_a["total_internal_allocated"],
-            "ModeB": mode_b["total_internal_allocated"],
-            "Delta (ModeB - ModeA)": internal_delta_tons,
+            "ModeA": _dashboard_filtered_sum_formula(
+                fact_meta, "ModeA", "Internal_Tons", selection_mode_ref, selected_range_ref
+            ),
+            "ModeB": _dashboard_filtered_sum_formula(
+                fact_meta, "ModeB", "Internal_Tons", selection_mode_ref, selected_range_ref
+            ),
+            "Delta (ModeB - ModeA)": "=C11-B11",
         },
         {
             "Metric": "Outsourced",
-            "ModeA": mode_a["total_outsourced"],
-            "ModeB": mode_b["total_outsourced"],
-            "Delta (ModeB - ModeA)": outsourced_delta_tons,
+            "ModeA": _dashboard_filtered_sum_formula(
+                fact_meta, "ModeA", "Outsourced_Tons", selection_mode_ref, selected_range_ref
+            ),
+            "ModeB": _dashboard_filtered_sum_formula(
+                fact_meta, "ModeB", "Outsourced_Tons", selection_mode_ref, selected_range_ref
+            ),
+            "Delta (ModeB - ModeA)": "=C12-B12",
         },
         {
             "Metric": "Residual unmet",
-            "ModeA": mode_a["total_unmet"],
-            "ModeB": mode_b["total_unmet"],
-            "Delta (ModeB - ModeA)": unmet_delta_tons,
+            "ModeA": _dashboard_filtered_sum_formula(
+                fact_meta, "ModeA", "Unmet_Tons", selection_mode_ref, selected_range_ref
+            ),
+            "ModeB": _dashboard_filtered_sum_formula(
+                fact_meta, "ModeB", "Unmet_Tons", selection_mode_ref, selected_range_ref
+            ),
+            "Delta (ModeB - ModeA)": "=C13-B13",
         },
         {
             "Metric": "Service level",
-            "ModeA": mode_a["service_level"] / 100.0,
-            "ModeB": mode_b["service_level"] / 100.0,
-            "Delta (ModeB - ModeA)": service_delta_pct / 100.0,
+            "ModeA": "=IF(B10=0,0,(B11+B12)/B10)",
+            "ModeB": "=IF(C10=0,0,(C11+C12)/C10)",
+            "Delta (ModeB - ModeA)": "=C14-B14",
         },
         {
-            "Metric": "Result rows",
-            "ModeA": mode_a["result_rows"],
-            "ModeB": mode_b["result_rows"],
-            "Delta (ModeB - ModeA)": mode_b["result_rows"] - mode_a["result_rows"],
+            "Metric": "Selected workcenters",
+            "ModeA": _dashboard_selected_workcenter_count_formula(
+                fact_meta, selection_mode_ref, selected_range_ref
+            ),
+            "ModeB": _dashboard_selected_workcenter_count_formula(
+                fact_meta, selection_mode_ref, selected_range_ref
+            ),
+            "Delta (ModeB - ModeA)": '=""',
         },
     ]
     metric_df = pd.DataFrame(metric_rows)
@@ -673,9 +1117,9 @@ def _write_executive_comparison(
     for column in ("B", "C", "D"):
         ws[f"{column}{service_row}"].number_format = PCT_FMT
         ws[f"{column}{service_row}"].fill = OK_FILL
-    result_rows_row = metric_layout["start_row"] + 6
-    for column in ("B", "C", "D"):
-        ws[f"{column}{result_rows_row}"].number_format = INT_FMT
+    selected_wc_row = metric_layout["start_row"] + 6
+    for column in ("B", "C"):
+        ws[f"{column}{selected_wc_row}"].number_format = INT_FMT
 
     ws.merge_cells("F9:N9")
     ws["F9"] = "Management conclusion"
@@ -683,21 +1127,15 @@ def _write_executive_comparison(
     ws["F9"].font = Font(color="FFFFFF", bold=True, size=11)
     ws["F9"].alignment = Alignment(horizontal="left", vertical="center")
     conclusion_lines = [
-        (
-            f"Service level: ModeB is {service_delta_pct:+.1f} pts versus ModeA "
-            f"({mode_a['service_level'] / 100.0:.1%} -> {mode_b['service_level'] / 100.0:.1%})."
-        ),
-        (
-            f"Residual unmet: ModeB changes unmet demand by {unmet_delta_tons:+,.1f} tons "
-            f"({mode_a['total_unmet']:,.1f} -> {mode_b['total_unmet']:,.1f})."
-        ),
-        f"Internal supply: ModeB changes internal allocation by {internal_delta_tons:+,.1f} tons.",
-        f"External reliance: ModeB changes outsourced volume by {outsourced_delta_tons:+,.1f} tons.",
-        "Use the detailed tabs to confirm where the differences come from: monthly balance, bottlenecks, heatmap, and product risk.",
+        '="- Service level: ModeB is "&TEXT(D14,"+0.0%;-0.0%")&" versus ModeA ("&TEXT(B14,"0.0%")&" -> "&TEXT(C14,"0.0%")&")."',
+        '="- Residual unmet: ModeB changes unmet demand by "&TEXT(D13,"+#,##0.0;-#,##0.0")&" tons ("&TEXT(B13,"#,##0.0")&" -> "&TEXT(C13,"#,##0.0")&")."',
+        '="- Internal supply: ModeB changes internal allocation by "&TEXT(D11,"+#,##0.0;-#,##0.0")&" tons."',
+        '="- External reliance: ModeB changes outsourced volume by "&TEXT(D12,"+#,##0.0;-#,##0.0")&" tons."',
+        '="- The current WorkCenter filter applies consistently to the KPI table, comparison cards, and charts on this page."',
     ]
     for offset, line in enumerate(conclusion_lines, start=10):
         ws.merge_cells(f"F{offset}:N{offset}")
-        ws[f"F{offset}"] = f"- {line}"
+        ws[f"F{offset}"] = line
         ws[f"F{offset}"].fill = SUMMARY_FILL
         ws[f"F{offset}"].font = Font(color="1F1F1F", size=10)
         ws[f"F{offset}"].alignment = Alignment(wrap_text=True, vertical="top")
@@ -707,14 +1145,14 @@ def _write_executive_comparison(
         {
             "Category": ["Internal allocated", "Outsourced", "Residual unmet"],
             "ModeA": [
-                mode_a["total_internal_allocated"],
-                mode_a["total_outsourced"],
-                mode_a["total_unmet"],
+                "=B11",
+                "=B12",
+                "=B13",
             ],
             "ModeB": [
-                mode_b["total_internal_allocated"],
-                mode_b["total_outsourced"],
-                mode_b["total_unmet"],
+                "=C11",
+                "=C12",
+                "=C13",
             ],
         }
     )
@@ -741,8 +1179,8 @@ def _write_executive_comparison(
         {
             "Mode": ["ModeA", "ModeB"],
             "Service_Level": [
-                mode_a["service_level"] / 100.0,
-                mode_b["service_level"] / 100.0,
+                "=B14",
+                "=C14",
             ],
         }
     )
@@ -764,10 +1202,10 @@ def _write_executive_comparison(
     ws.add_chart(service_chart, "M18")
 
     insights = [
-        f"ModeB service level is {service_delta_pct:+.1f} pts versus ModeA.",
-        f"ModeB changes residual unmet by {unmet_delta_tons:+,.1f} tons.",
-        f"ModeB changes internal allocation by {internal_delta_tons:+,.1f} tons.",
-        f"ModeB changes outsourced tons by {outsourced_delta_tons:+,.1f} tons.",
+        '="- ModeB service level is "&TEXT(D14,"+0.0%;-0.0%")&" versus ModeA."',
+        '="- ModeB changes residual unmet by "&TEXT(D13,"+#,##0.0;-#,##0.0")&" tons."',
+        '="- ModeB changes internal allocation by "&TEXT(D11,"+#,##0.0;-#,##0.0")&" tons."',
+        '="- ModeB changes outsourced tons by "&TEXT(D12,"+#,##0.0;-#,##0.0")&" tons."',
     ]
     ws.merge_cells("A33:N33")
     ws["A33"] = "Quick read-out"
@@ -776,7 +1214,7 @@ def _write_executive_comparison(
     ws["A33"].alignment = Alignment(horizontal="left", vertical="center")
     for offset, line in enumerate(insights, start=34):
         ws.merge_cells(f"A{offset}:N{offset}")
-        ws[f"A{offset}"] = f"- {line}"
+        ws[f"A{offset}"] = line
         ws[f"A{offset}"].alignment = Alignment(wrap_text=True)
         ws[f"A{offset}"].font = Font(color="1F1F1F", size=10)
     _autofit(ws)
@@ -983,7 +1421,7 @@ def _write_bottleneck_comparison(wb: Workbook, artifacts: dict[str, dict[str, An
 
 def _write_heatmap_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]) -> None:
     ws = wb.create_sheet("WC_Heatmap_Compare")
-    _write_sheet_title(ws, "WorkCenter Heatmap Comparison")
+    _write_sheet_title(ws, "WorkCenter Pressure Heatmap Comparison")
 
     wc_names = []
     for mode in ("ModeA", "ModeB"):
@@ -1018,6 +1456,7 @@ def _write_heatmap_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
             num_formats={column: PCT_FMT for column in pivot.columns if column != "WorkCenter"},
         )
         if layout["end_row"] > layout["start_row"]:
+            max_heat = max(1.0, float(pivot.drop(columns=["WorkCenter"]).to_numpy().max()))
             ws.conditional_formatting.add(
                 f"{get_column_letter(layout['start_col'] + 1)}{layout['start_row'] + 1}:{get_column_letter(layout['end_col'])}{layout['end_row']}",
                 ColorScaleRule(
@@ -1028,13 +1467,18 @@ def _write_heatmap_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
                     mid_value=0.85,
                     mid_color="F4B183",
                     end_type="num",
-                    end_value=1.0,
+                    end_value=max_heat,
                     end_color="C00000",
                 ),
             )
         next_start_row = layout["end_row"] + 3
 
-    _write_note(ws, f"A{next_start_row}", "ModeA heatmap is shown first, with ModeB directly below for vertical comparison.")
+    _write_note(
+        ws,
+        f"A{next_start_row}",
+        "ModeA heatmap is shown first, with ModeB directly below for vertical comparison. "
+        "Both views show internal allocation plus assigned unmet against raw nameplate capacity.",
+    )
     _autofit(ws)
 
 
@@ -1589,7 +2033,7 @@ def _write_bottleneck_analysis(wb: Workbook, analysis: dict[str, Any]) -> None:
     bar_chart.type = "bar"
     bar_chart.style = 10
     bar_chart.title = "Top Bottleneck WorkCenters"
-    bar_chart.x_axis.title = "Peak load"
+    bar_chart.x_axis.title = "Peak pressure load"
     bar_chart.y_axis.title = "WorkCenter"
     bar_chart.height = 8
     bar_chart.width = 12
@@ -1627,8 +2071,8 @@ def _write_bottleneck_analysis(wb: Workbook, analysis: dict[str, Any]) -> None:
         num_formats={"LoadPct": PCT_FMT},
     )
     wc_line_chart = LineChart()
-    wc_line_chart.title = f"{focus_wc} Load Trend"
-    wc_line_chart.y_axis.title = "Load"
+    wc_line_chart.title = f"{focus_wc} Pressure Load Trend"
+    wc_line_chart.y_axis.title = "Pressure load"
     wc_line_chart.height = 7
     wc_line_chart.width = 12
     wc_line_chart.add_data(
@@ -1699,14 +2143,15 @@ def _write_bottleneck_analysis(wb: Workbook, analysis: dict[str, Any]) -> None:
     _write_note(
         ws,
         "A38",
-        "The full heatmap is written to the separate 'WC_Heatmap' sheet to keep long planning horizons readable.",
+        "Bottleneck metrics and heatmap percentages are based on internal allocation plus assigned unmet, "
+        "shown against raw nameplate monthly capacity.",
     )
     _autofit(ws)
 
 
 def _write_wc_heatmap(wb: Workbook, analysis: dict[str, Any]) -> None:
     ws = wb.create_sheet("WC_Heatmap")
-    _write_sheet_title(ws, "WorkCenter Load Heatmap")
+    _write_sheet_title(ws, "WorkCenter Pressure Heatmap")
 
     wc_long = analysis["wc_long"]
     wc_summary = analysis["wc_summary"]
@@ -1728,6 +2173,7 @@ def _write_wc_heatmap(wb: Workbook, analysis: dict[str, Any]) -> None:
         num_formats={column: PCT_FMT for column in pivot.columns if column != "WorkCenter"},
     )
     if layout["end_row"] > layout["start_row"]:
+        max_heat = max(1.0, float(pivot.drop(columns=["WorkCenter"]).to_numpy().max()))
         ws.conditional_formatting.add(
             f"{get_column_letter(layout['start_col'] + 1)}{layout['start_row'] + 1}:"
             f"{get_column_letter(layout['end_col'])}{layout['end_row']}",
@@ -1739,14 +2185,15 @@ def _write_wc_heatmap(wb: Workbook, analysis: dict[str, Any]) -> None:
                 mid_value=0.85,
                 mid_color="F4B183",
                 end_type="num",
-                end_value=1.0,
+                end_value=max_heat,
                 end_color="C00000",
             ),
         )
     _write_note(
         ws,
         "A20",
-        "Heatmap colors are based on absolute load percentage so 100% cells stay visually consistent.",
+        "Heatmap values are based on internal allocation plus assigned unmet, shown against raw nameplate monthly capacity. "
+        "Values may exceed 100%.",
     )
     _autofit(ws)
 

@@ -7,6 +7,26 @@ The format is based on a simple release log:
 - `Changed` for behavior or workflow updates
 - `Fixed` for bug fixes
 
+## [v1.1.3] - 2026-03-31
+
+Dashboard filtering, pressure-load reporting, and control-workbook license visibility release.
+
+### Added
+- WorkCenter-filtered dashboard controls for `ModeA`, `ModeB`, and summary comparison workbooks
+- A visible `License` sheet in `Capacity_Optimizer_Control.xlsx`
+- Report-side pressure-load helpers for attributing `Unmet` and `Outsourced` demand by WorkCenter
+
+### Changed
+- Heatmap and bottleneck percentages now display against nameplate monthly capacity instead of utilization-limited capacity
+- `ModeA` dashboard and heatmap unmet attribution now follows planner-resource ownership rules
+- `ModeB` dashboard and heatmap attribution now sends outsourced tons to `Toller` and applies routing/capacity fallback rules for unmet demand
+- Control workbook generation and refresh now show the currently detected license details
+- Tool version string updated to `v1.1.3`
+
+### Fixed
+- Added validation for planner/product multi-resource conflicts and duplicate product-level routing definitions that break reporting attribution
+- Delivery package export now refreshes the control workbook license page when a license file is bundled
+
 ## [v1.1.2] - 2026-03-30
 
 Documentation and packaging polish release for the Excel-first capacity optimizer.
