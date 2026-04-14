@@ -14,6 +14,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from app.data_loader import discover_planner_scenarios
+from app.runtime_paths import ensure_workspace_dirs, resolve_runtime_paths
 
 
 HDR_FILL = PatternFill("solid", fgColor="1F4E79")
@@ -29,10 +30,10 @@ BTN_FONT = Font(color="FFFFFF", bold=True, size=11)
 THIN = Side(style="thin", color="B0B0B0")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
-ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
-DEFAULT_LOAD_DIR = os.path.join(ROOT_DIR, "Data_Input")
-DEFAULT_OUT = os.path.join(ROOT_DIR, "Tooling Control Panel", "Capacity_Optimizer_Control.xlsx")
 DEFAULT_PROJECT_ROOT = ".."
+RUNTIME_PATHS = resolve_runtime_paths()
+DEFAULT_LOAD_DIR = str(RUNTIME_PATHS.workspace_input_dir)
+DEFAULT_OUT = str(RUNTIME_PATHS.control_workbook_path)
 
 
 @click.command()
@@ -43,6 +44,7 @@ def main(out: str) -> None:
 
 
 def write_control_workbook(out: str, load_dir: str | None = None) -> None:
+    ensure_workspace_dirs()
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     scenario_options = _scenario_options(load_dir or DEFAULT_LOAD_DIR)
     project_root = _default_project_root_for_workbook(out)

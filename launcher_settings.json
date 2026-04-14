@@ -1,0 +1,17 @@
+{
+  "project_root_folder": "C:\\Users\\super\\capacity_optimizer",
+  "input_load_folder": "C:\\Users\\super\\capacity_optimizer\\Data_Input",
+  "input_master_folder": "C:\\Users\\super\\capacity_optimizer\\Data_Input",
+  "output_folder": "C:\\Users\\super\\capacity_optimizer\\output",
+  "output_file_name": "capacity_result.xlsx",
+  "scenario_name": "Baseline",
+  "start_year": "2027",
+  "start_month": "1",
+  "horizon_months": "60",
+  "run_mode": "Both",
+  "direct_mode": "Yes",
+  "verbose": "No",
+  "skip_validation_errors": "No",
+  "theme": "System",
+  "saved_at": "2026-04-14 21:52:34"
+}

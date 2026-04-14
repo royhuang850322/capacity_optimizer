@@ -13,6 +13,7 @@ if not defined PY_CMD (
 
 if not defined PY_CMD (
     echo Python was not found on this computer.
+    echo Run runtime\check_python_setup.bat first.
     pause
     exit /b 1
 )

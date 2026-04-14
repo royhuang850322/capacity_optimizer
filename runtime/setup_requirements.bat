@@ -26,7 +26,7 @@ if not defined PY_CMD (
 
 if not defined PY_CMD (
     echo ERROR: Python was not found on this computer.
-    echo Install Python first, then run this file again.
+    echo Run runtime\check_python_setup.bat first.
     goto :fail
 )
 

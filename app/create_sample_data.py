@@ -23,9 +23,11 @@ from pathlib import Path
 
 import pandas as pd
 
+from app.runtime_paths import resolve_runtime_paths
 
-BASE_DIR = Path(__file__).resolve().parent
-OUT_DIR = BASE_DIR / "Data_Input"
+RUNTIME_PATHS = resolve_runtime_paths()
+BASE_DIR = RUNTIME_PATHS.app_install_dir
+OUT_DIR = RUNTIME_PATHS.sample_data_dir
 MONTH_COUNT = 72
 START_YEAR = 2027
 START_MONTH = 1
@@ -102,7 +104,7 @@ FAMILY_CONFIGS: list[FamilyConfig] = [
 VARIANT_CONFIGS: dict[str, VariantConfig] = {
     STANDARD_VARIANT: VariantConfig(
         name=STANDARD_VARIANT,
-        output_dir=BASE_DIR / "Data_Input",
+        output_dir=OUT_DIR,
         family_demand_scale={},
         resource_capacity_bias={},
     ),

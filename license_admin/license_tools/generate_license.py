@@ -10,7 +10,13 @@ import argparse
 from pathlib import Path
 import sys
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2]
+if str(BOOTSTRAP_ROOT) not in sys.path:
+    sys.path.insert(0, str(BOOTSTRAP_ROOT))
+
+from app.runtime_paths import resolve_runtime_paths
+
+PROJECT_ROOT = resolve_runtime_paths().app_install_dir
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 

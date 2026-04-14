@@ -4,3 +4,4 @@ pandas>=2.0
 click>=8.1
 colorama>=0.4
 cryptography>=45.0
+PySide6>=6.7

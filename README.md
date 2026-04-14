@@ -119,6 +119,26 @@ python -m app.main --input-template "Tooling Control Panel/Capacity_Optimizer_Co
 
 Before running, place a valid `license.json` in `licenses\active\license.json` and edit the `Control_Panel` sheet in `Tooling Control Panel/Capacity_Optimizer_Control.xlsx`.
 
+## Desktop Launcher
+
+For a lighter customer-facing desktop workflow, use:
+
+- [CapacityOptimizerLauncher.pyw](/C:/Users/super/capacity_optimizer/CapacityOptimizerLauncher.pyw)
+
+This launcher can:
+
+- initialize the local user workspace
+- create or open the control workbook
+- run the optimizer without typing `python -m ...`
+- open the output folder
+- open the log folder
+- keep customer-editable workbook, data, logs, and licenses in a separate user workspace
+
+More detail:
+
+- [Desktop Launcher Usage](/C:/Users/super/capacity_optimizer/docs/desktop_launcher_usage.md)
+- [PyInstaller One-Folder Build](/C:/Users/super/capacity_optimizer/docs/pyinstaller_onefolder_build.md)
+
 ## License Workflow
 
 ### Trial / Unbound
@@ -386,6 +406,21 @@ GUI entry:
 license_admin\open_delivery_exporter.bat
 ```
 
+## Documentation Hub
+
+Core guides for Milestone 10:
+
+- [User Guide](/C:/Users/super/capacity_optimizer/docs/user_guide.md)
+- [Developer Guide](/C:/Users/super/capacity_optimizer/docs/developer_guide.md)
+
+Packaging and deployment references:
+
+- [PyInstaller One-Folder Build](/C:/Users/super/capacity_optimizer/docs/pyinstaller_onefolder_build.md)
+- [Installer Preparation](/C:/Users/super/capacity_optimizer/docs/installer_prep.md)
+- [Runtime Directory Strategy](/C:/Users/super/capacity_optimizer/docs/runtime_directory_strategy.md)
+- [Desktop Launcher Usage](/C:/Users/super/capacity_optimizer/docs/desktop_launcher_usage.md)
+- [IT Deployment Checklist (CN)](/C:/Users/super/capacity_optimizer/docs/IT_DEPLOYMENT_CHECKLIST_CN.md)
+
 ## Changelog
 
 - [CHANGELOG.md](/C:/Users/super/capacity_optimizer/docs/CHANGELOG.md)
@@ -397,3 +432,10 @@ license_admin\open_delivery_exporter.bat
 ## License
 
 MIT. See [LICENSE](/C:/Users/super/capacity_optimizer/LICENSE).
+
+## Packaging Path Strategy
+
+For the Windows desktop packaging plan and the runtime directory strategy, see:
+
+- [Packaging Implementation Plan](/C:/Users/super/capacity_optimizer/docs/implementation_plan_packaging.md)
+- [Runtime Directory Strategy](/C:/Users/super/capacity_optimizer/docs/runtime_directory_strategy.md)

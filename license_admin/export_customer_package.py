@@ -13,7 +13,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+from app.runtime_paths import resolve_runtime_paths
+
+RUNTIME_PATHS = resolve_runtime_paths()
+REPO_ROOT = RUNTIME_PATHS.app_install_dir
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 

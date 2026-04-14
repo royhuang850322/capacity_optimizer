@@ -42,6 +42,8 @@ Thumbs.db
 # Local outputs
 output/
 delivery_packages/
+dist/
+build/
 tests/_tmp/
 licenses/
 license.json

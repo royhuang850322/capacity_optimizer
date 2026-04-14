@@ -116,7 +116,7 @@ def build_dashboard_fact_frame(
             routings=routings,
         )
 
-    fact_by_workcenter: Dict[str, Dict[str, float]] = defaultdict(
+    fact_by_workcenter_year: Dict[Tuple[str, str], Dict[str, float]] = defaultdict(
         lambda: {
             "Demand_Tons": 0.0,
             "Internal_Tons": 0.0,
@@ -126,26 +126,33 @@ def build_dashboard_fact_frame(
         }
     )
 
-    for (_month, _product, work_center), tons in internal_tons_by_key.items():
-        fact_by_workcenter[work_center]["Demand_Tons"] += tons
-        fact_by_workcenter[work_center]["Internal_Tons"] += tons
-        fact_by_workcenter[work_center]["Supplied_Tons"] += tons
+    for (month, _product, work_center), tons in internal_tons_by_key.items():
+        year = _month_to_year(month)
+        fact_by_workcenter_year[(year, work_center)]["Demand_Tons"] += tons
+        fact_by_workcenter_year[(year, work_center)]["Internal_Tons"] += tons
+        fact_by_workcenter_year[(year, work_center)]["Supplied_Tons"] += tons
 
-    for (_month, _product, work_center), tons in assigned_outsourced_tons.items():
-        fact_by_workcenter[work_center]["Demand_Tons"] += tons
-        fact_by_workcenter[work_center]["Outsourced_Tons"] += tons
-        fact_by_workcenter[work_center]["Supplied_Tons"] += tons
+    for (month, _product, work_center), tons in assigned_outsourced_tons.items():
+        year = _month_to_year(month)
+        fact_by_workcenter_year[(year, work_center)]["Demand_Tons"] += tons
+        fact_by_workcenter_year[(year, work_center)]["Outsourced_Tons"] += tons
+        fact_by_workcenter_year[(year, work_center)]["Supplied_Tons"] += tons
 
-    for (_month, _product, work_center), tons in assigned_unmet_tons.items():
-        fact_by_workcenter[work_center]["Demand_Tons"] += tons
-        fact_by_workcenter[work_center]["Unmet_Tons"] += tons
+    for (month, _product, work_center), tons in assigned_unmet_tons.items():
+        year = _month_to_year(month)
+        fact_by_workcenter_year[(year, work_center)]["Demand_Tons"] += tons
+        fact_by_workcenter_year[(year, work_center)]["Unmet_Tons"] += tons
 
     rows = []
-    for work_center in sorted(fact_by_workcenter, key=str.casefold):
-        payload = fact_by_workcenter[work_center]
+    for year, work_center in sorted(
+        fact_by_workcenter_year,
+        key=lambda item: (str(item[0]).casefold(), str(item[1]).casefold()),
+    ):
+        payload = fact_by_workcenter_year[(year, work_center)]
         rows.append(
             {
                 "Mode": mode,
+                "Year": year,
                 "WorkCenter": work_center,
                 "Demand_Tons": round(payload["Demand_Tons"], 4),
                 "Internal_Tons": round(payload["Internal_Tons"], 4),
@@ -159,6 +166,7 @@ def build_dashboard_fact_frame(
         rows,
         columns=[
             "Mode",
+            "Year",
             "WorkCenter",
             "Demand_Tons",
             "Internal_Tons",
@@ -167,6 +175,94 @@ def build_dashboard_fact_frame(
             "Supplied_Tons",
         ],
     )
+
+
+def build_pressure_tons_frame(
+    mode: str,
+    results: List[AllocationResult],
+    loads: List[LoadRecord],
+    capacities: List[CapacityRecord],
+    routings: List[RoutingRecord],
+    months: List[str],
+) -> pd.DataFrame:
+    raw_capacity_map = build_raw_capacity_map(capacities)
+    month_wc_tons = _build_internal_workcenter_tons_map(results)
+    unmet_by_month_product = _extract_unmet_by_month_product(results)
+
+    if mode.strip().lower() == "modea":
+        assigned_unmet_tons = _assign_mode_a_unmet_tons(
+            loads=loads,
+            unmet_by_month_product=unmet_by_month_product,
+        )
+    else:
+        assigned_unmet_tons = _assign_mode_b_unmet_tons(
+            results=results,
+            unmet_by_month_product=unmet_by_month_product,
+            raw_capacity_map=raw_capacity_map,
+            routings=routings,
+        )
+
+    for (month, _product, work_center), tons in assigned_unmet_tons.items():
+        month_wc_tons[(month, work_center)] += tons
+
+    workcenters = sorted({work_center for _month, work_center in month_wc_tons}, key=str.casefold)
+    if not workcenters:
+        return pd.DataFrame(columns=["WorkCenter", *months])
+
+    rows = []
+    for work_center in workcenters:
+        row = {"WorkCenter": work_center}
+        for month in months:
+            row[month] = round(month_wc_tons.get((month, work_center), 0.0), 4)
+        rows.append(row)
+    return pd.DataFrame(rows, columns=["WorkCenter", *months])
+
+
+def build_capacity_compare_heatmap_frames(
+    mode: str,
+    basis_results: Dict[str, List[AllocationResult]],
+    basis_capacities: Dict[str, List[CapacityRecord]],
+    loads: List[LoadRecord],
+    routings: List[RoutingRecord],
+    months: List[str],
+    demand_basis: str = "Planner",
+) -> Dict[str, pd.DataFrame]:
+    max_load = build_pressure_load_frame(
+        mode=mode,
+        results=basis_results["Max"],
+        loads=loads,
+        capacities=basis_capacities["Max"],
+        routings=routings,
+        months=months,
+    )
+    planner_load = build_pressure_load_frame(
+        mode=mode,
+        results=basis_results["Planner"],
+        loads=loads,
+        capacities=basis_capacities["Planner"],
+        routings=routings,
+        months=months,
+    )
+    demand_tons = build_pressure_tons_frame(
+        mode=mode,
+        results=basis_results[demand_basis],
+        loads=loads,
+        capacities=basis_capacities[demand_basis],
+        routings=routings,
+        months=months,
+    )
+
+    monthly = _merge_heatmap_metric_frames(
+        demand_tons=demand_tons,
+        max_load=max_load,
+        planner_load=planner_load,
+        months=months,
+    )
+    yearly = _summarize_heatmap_months_to_years(monthly, months)
+    return {
+        "monthly": monthly,
+        "yearly": yearly,
+    }
 
 
 def _build_internal_load_map(
@@ -180,6 +276,15 @@ def _build_internal_load_map(
             continue
         month_wc_load[(month, work_center)] += tons / raw_capacity
     return month_wc_load
+
+
+def _build_internal_workcenter_tons_map(
+    results: List[AllocationResult],
+) -> Dict[Tuple[str, str], float]:
+    month_wc_tons: Dict[Tuple[str, str], float] = defaultdict(float)
+    for (month, _product, work_center), tons in _build_internal_tons_map(results).items():
+        month_wc_tons[(month, work_center)] += tons
+    return month_wc_tons
 
 
 def _build_internal_tons_map(
@@ -208,6 +313,72 @@ def _extract_unmet_by_month_product(
         for key, value in unmet_by_month_product.items()
         if value > EPSILON
     }
+
+
+def _month_to_year(month_value: str) -> str:
+    text = str(month_value or "").strip()
+    return text[:4] if len(text) >= 4 else text
+
+
+def _merge_heatmap_metric_frames(
+    demand_tons: pd.DataFrame,
+    max_load: pd.DataFrame,
+    planner_load: pd.DataFrame,
+    months: List[str],
+) -> pd.DataFrame:
+    workcenters = sorted(
+        set(demand_tons.get("WorkCenter", pd.Series(dtype=str)).tolist())
+        | set(max_load.get("WorkCenter", pd.Series(dtype=str)).tolist())
+        | set(planner_load.get("WorkCenter", pd.Series(dtype=str)).tolist()),
+        key=str.casefold,
+    )
+    metric_specs = [
+        ("Demand", demand_tons),
+        ("Max Load%", max_load),
+        ("Planner Load%", planner_load),
+    ]
+
+    rows: list[dict[str, object]] = []
+    for work_center in workcenters:
+        for metric_name, frame in metric_specs:
+            frame_row = frame[frame["WorkCenter"] == work_center] if not frame.empty else pd.DataFrame()
+            row = {
+                "WorkCenter": work_center,
+                "Metric": metric_name,
+            }
+            for month in months:
+                row[month] = (
+                    float(frame_row.iloc[0][month])
+                    if not frame_row.empty and month in frame_row.columns
+                    else 0.0
+                )
+            rows.append(row)
+    return pd.DataFrame(rows, columns=["WorkCenter", "Metric", *months])
+
+
+def _summarize_heatmap_months_to_years(
+    monthly_frame: pd.DataFrame,
+    months: List[str],
+) -> pd.DataFrame:
+    years = list(dict.fromkeys(_month_to_year(month) for month in months))
+    if monthly_frame.empty:
+        return pd.DataFrame(columns=["WorkCenter", "Metric", *years])
+
+    rows: list[dict[str, object]] = []
+    for _, record in monthly_frame.iterrows():
+        row = {
+            "WorkCenter": record["WorkCenter"],
+            "Metric": record["Metric"],
+        }
+        for year in years:
+            year_months = [month for month in months if _month_to_year(month) == year]
+            values = [float(record[month]) for month in year_months if month in monthly_frame.columns]
+            if record["Metric"] == "Demand":
+                row[year] = round(sum(values), 4)
+            else:
+                row[year] = round(sum(values) / len(values), 6) if values else 0.0
+        rows.append(row)
+    return pd.DataFrame(rows, columns=["WorkCenter", "Metric", *years])
 
 
 def _extract_outsourced_by_month_product(

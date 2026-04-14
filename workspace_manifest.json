@@ -1,0 +1,14 @@
+{
+  "app_name": "CapacityOptimizer",
+  "initialized_at": "2026-04-14 17:58:31",
+  "last_checked_at": "2026-04-14 21:52:34",
+  "install_dir": "C:\\Users\\super\\capacity_optimizer",
+  "workspace_dir": "C:\\Users\\super\\capacity_optimizer",
+  "control_workbook_path": "C:\\Users\\super\\capacity_optimizer\\Tooling Control Panel\\Capacity_Optimizer_Control.xlsx",
+  "outputs_dir": "C:\\Users\\super\\capacity_optimizer\\output",
+  "logs_dir": "C:\\Users\\super\\capacity_optimizer\\logs",
+  "license_dir": "C:\\Users\\super\\capacity_optimizer\\licenses",
+  "docs_dir": "C:\\Users\\super\\capacity_optimizer\\docs",
+  "sample_data_dir": "C:\\Users\\super\\capacity_optimizer\\Data_Input",
+  "is_frozen": false
+}

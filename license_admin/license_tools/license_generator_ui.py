@@ -11,8 +11,13 @@ from datetime import date, timedelta
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2]
+if str(BOOTSTRAP_ROOT) not in sys.path:
+    sys.path.insert(0, str(BOOTSTRAP_ROOT))
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from app.runtime_paths import resolve_runtime_paths
+
+PROJECT_ROOT = resolve_runtime_paths().app_install_dir
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -37,8 +42,8 @@ class LicenseGeneratorApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Chemical Capacity Optimizer - License Generator")
-        self.root.geometry("980x860")
-        self.root.minsize(940, 800)
+        self.root.geometry("860x680")
+        self.root.minsize(780, 560)
 
         default_private_key = PROJECT_ROOT / "license_admin" / "private_keys" / "license_signing_ed25519_private.pem"
 
@@ -72,9 +77,25 @@ class LicenseGeneratorApp:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        container = ttk.Frame(self.root, padding=14)
-        container.grid(row=0, column=0, sticky="nsew")
+        outer = ttk.Frame(self.root, padding=8)
+        outer.grid(row=0, column=0, sticky="nsew")
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=1)
+
+        self.canvas = tk.Canvas(outer, highlightthickness=0)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(outer, orient="vertical", command=self.canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+
+        container = ttk.Frame(self.canvas, padding=12)
         container.columnconfigure(0, weight=1)
+        self.canvas_window = self.canvas.create_window((0, 0), window=container, anchor="nw")
+
+        container.bind("<Configure>", self._on_container_configure)
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+        self._bind_mousewheel()
 
         ttk.Label(
             container,
@@ -88,7 +109,7 @@ class LicenseGeneratorApp:
                 "This tool stores license files under RSCP's internal repository using the pattern "
                 "AdminRoot / Customer / Tool / requests|issued|active|archive."
             ),
-            wraplength=920,
+            wraplength=760,
         ).grid(row=1, column=0, sticky="w", pady=(4, 10))
 
         profile_frame = ttk.LabelFrame(container, text="License Profile", padding=10)
@@ -183,9 +204,31 @@ class LicenseGeneratorApp:
         status_frame = ttk.LabelFrame(container, text="Status", padding=10)
         status_frame.grid(row=7, column=0, sticky="ew", pady=(12, 0))
         status_frame.columnconfigure(0, weight=1)
-        ttk.Label(status_frame, textvariable=self.status_var, wraplength=900, foreground="#1f4e79").grid(
+        ttk.Label(status_frame, textvariable=self.status_var, wraplength=740, foreground="#1f4e79").grid(
             row=0, column=0, sticky="w"
         )
+
+    def _on_container_configure(self, _event=None) -> None:
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event) -> None:
+        self.canvas.itemconfigure(self.canvas_window, width=event.width)
+
+    def _bind_mousewheel(self) -> None:
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind_all("<Button-4>", self._on_mousewheel)
+        self.canvas.bind_all("<Button-5>", self._on_mousewheel)
+
+    def _on_mousewheel(self, event) -> None:
+        if getattr(event, "delta", 0):
+            step = -1 * int(event.delta / 120) if event.delta else 0
+            if step:
+                self.canvas.yview_scroll(step, "units")
+            return
+        if getattr(event, "num", None) == 4:
+            self.canvas.yview_scroll(-1, "units")
+        elif getattr(event, "num", None) == 5:
+            self.canvas.yview_scroll(1, "units")
 
     def _bind_events(self) -> None:
         self.profile_var.trace_add("write", lambda *_args: self._apply_profile_defaults(reset_license_id=True))
@@ -232,18 +275,12 @@ class LicenseGeneratorApp:
         tool_name = self.tool_name_var.get().strip() or DEFAULT_TOOL_REPOSITORY_NAME
         admin_root = self.admin_root_var.get().strip() or str(default_license_admin_root())
         license_id = self.license_id_var.get().strip() or "PENDING_LICENSE_ID"
-
-        if customer_name:
-            dirs = ensure_customer_tool_dirs(customer_name, admin_root=admin_root, tool_name=tool_name)
-            self.customer_root_var.set(str(dirs["base"]))
-            self.issued_path_var.set(str(build_issued_license_path(customer_name, license_id, admin_root=admin_root, tool_name=tool_name)))
-            self.active_path_var.set(str(build_active_license_path(customer_name, admin_root=admin_root, tool_name=tool_name)))
-        else:
-            preview_customer = sanitize_path_component(customer_name, "CUSTOMER_NAME")
-            base = Path(admin_root) / preview_customer / sanitize_path_component(tool_name, DEFAULT_TOOL_REPOSITORY_NAME)
-            self.customer_root_var.set(str(base))
-            self.issued_path_var.set(str(base / "issued" / f"{sanitize_path_component(license_id, 'LICENSE')}.json"))
-            self.active_path_var.set(str(base / "active" / "license.json"))
+        preview_customer = sanitize_path_component(customer_name, "CUSTOMER_NAME")
+        preview_tool = sanitize_path_component(tool_name, DEFAULT_TOOL_REPOSITORY_NAME)
+        base = Path(admin_root) / preview_customer / preview_tool
+        self.customer_root_var.set(str(base))
+        self.issued_path_var.set(str(base / "issued" / f"{sanitize_path_component(license_id, 'LICENSE')}.json"))
+        self.active_path_var.set(str(base / "active" / "license.json"))
 
     def _load_machine_json(self) -> None:
         selected = filedialog.askopenfilename(

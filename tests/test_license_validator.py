@@ -10,7 +10,7 @@ from unittest.mock import patch
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import app.license_validator as license_validator
-from app.license_validator import LicenseValidationError, validate_license
+from app.license_validator import LicenseValidationError, validate_license, validate_license_with_fallback
 
 
 TEST_TMP_ROOT = os.path.join(os.path.dirname(__file__), "_tmp")
@@ -116,6 +116,41 @@ class LicenseValidatorTests(unittest.TestCase):
                 with patch("app.license_validator.get_machine_fingerprint", return_value="sha256:othermachine"):
                     with self.assertRaises(LicenseValidationError):
                         validate_license(tmpdir, today=date(2026, 4, 1))
+
+    def test_validate_license_with_fallback_accepts_machine_locked_workspace_license(self):
+        private_key = Ed25519PrivateKey.generate()
+        public_key = private_key.public_key()
+        payload = _signed_payload(
+            private_key,
+            binding_mode="machine_locked",
+            machine_fingerprint="sha256:expectedmachinefingerprint",
+            machine_label="LOCKED-PC",
+        )
+
+        with workspace_tempdir() as tmpdir:
+            wrong_root = os.path.join(tmpdir, "wrong_root")
+            os.makedirs(wrong_root, exist_ok=True)
+            active_dir = os.path.join(tmpdir, "licenses", "active")
+            os.makedirs(active_dir, exist_ok=True)
+            license_path = os.path.join(active_dir, "license.json")
+            with open(license_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+            with patch("app.license_validator._load_public_key", return_value=public_key):
+                with patch(
+                    "app.license_validator.get_machine_fingerprint",
+                    return_value="sha256:expectedmachinefingerprint",
+                ):
+                    info = validate_license_with_fallback(
+                        primary_root=wrong_root,
+                        fallback_roots=[tmpdir],
+                        today=date(2026, 4, 1),
+                    )
+
+        self.assertEqual(info.status, "Valid")
+        self.assertEqual(info.binding_mode, "machine_locked")
+        self.assertEqual(info.license_path, license_path)
+        self.assertEqual(info.project_root, os.path.abspath(tmpdir))
 
 
 if __name__ == "__main__":

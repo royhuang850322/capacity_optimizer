@@ -257,6 +257,20 @@ def load_direct_mode_a(
     return loads, caps, []
 
 
+def load_direct_mode_a_with_capacity_bases(
+    load_folder: str,
+    master_folder: str,
+    selected_scenario: str | None = None,
+) -> Tuple[List[LoadRecord], dict[str, List[CapacityRecord]], List[RoutingRecord]]:
+    loads, legacy_caps, _ = load_direct(
+        load_folder=load_folder,
+        master_folder=master_folder,
+        routing_filename=None,
+        selected_scenario=selected_scenario,
+    )
+    return loads, _load_capacity_bases(master_folder, legacy_caps), []
+
+
 def load_direct_mode_b(
     load_folder: str,
     master_folder: str,
@@ -273,6 +287,21 @@ def load_direct_mode_b(
         routing_required=True,
         selected_scenario=selected_scenario,
     )
+
+
+def load_direct_mode_b_with_capacity_bases(
+    load_folder: str,
+    master_folder: str,
+    selected_scenario: str | None = None,
+) -> Tuple[List[LoadRecord], dict[str, List[CapacityRecord]], List[RoutingRecord]]:
+    loads, legacy_caps, routings = load_direct(
+        load_folder=load_folder,
+        master_folder=master_folder,
+        routing_filename="alternative_routing",
+        routing_required=True,
+        selected_scenario=selected_scenario,
+    )
+    return loads, _load_capacity_bases(master_folder, legacy_caps), routings
 
 
 def load_direct(
@@ -394,10 +423,10 @@ def discover_planner_scenarios(load_folder: str) -> List[str]:
             df.columns = [str(c).strip() for c in df.columns]
             df = _normalize_load_columns(df)
             scenario_col = None
-            if "Scenario" in df.columns:
-                scenario_col = "Scenario"
-            elif "ScenarioVersion" in df.columns:
+            if "ScenarioVersion" in df.columns:
                 scenario_col = "ScenarioVersion"
+            elif "Scenario" in df.columns:
+                scenario_col = "Scenario"
             if scenario_col is None:
                 continue
             for raw_value in df[scenario_col].tolist():
@@ -630,6 +659,12 @@ def _normalize_routing_columns(df: pd.DataFrame) -> pd.DataFrame:
         "penalty":               "PenaltyWeight",
         "capacity ton":          "_CapacityTon",   # store for priority derivation
         "capacity tons":         "_CapacityTon",
+        "max capacity ton":      "Max_Capacity_Tons",
+        "max capacity tons":     "Max_Capacity_Tons",
+        "designed capacity ton": "Planner_Capacity_Tons",
+        "designed capacity tons":"Planner_Capacity_Tons",
+        "planner capacity ton":  "Planner_Capacity_Tons",
+        "planner capacity tons": "Planner_Capacity_Tons",
     }
     new_cols = {col: rename_map[col.strip().lower()]
                 for col in df.columns if col.strip().lower() in rename_map}
@@ -663,6 +698,97 @@ def _parse_capacity_df(df: pd.DataFrame) -> List[CapacityRecord]:
         except Exception as e:
             print(f"  [WARN] Skipping capacity row due to: {e}  →  {dict(row)}")
     return records
+
+
+def _parse_capacity_factor(raw_value: object) -> float:
+    if raw_value is None:
+        return 1.0
+
+    text = str(raw_value).strip()
+    if text == "":
+        return 1.0
+
+    normalized = text.upper()
+    if normalized in {"Y", "YES", "TRUE"}:
+        return 1.0
+    if normalized in {"N", "NO", "FALSE"}:
+        return 0.0
+
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        return 1.0
+
+    if value > 1.0:
+        value = value / 100.0
+    return max(value, 0.0)
+
+
+def _parse_capacity_records_from_routing_df(
+    df: pd.DataFrame,
+    capacity_column: str,
+) -> List[CapacityRecord]:
+    routing_df = _normalize_routing_columns(df)
+    if capacity_column not in routing_df.columns:
+        return []
+
+    records: List[CapacityRecord] = []
+    for _, row in routing_df.iterrows():
+        product = str(row.get("Product", "") or "").strip()
+        work_center = str(row.get("WorkCenter", "") or "").strip()
+        if not product or not work_center:
+            continue
+
+        raw_capacity = row.get(capacity_column, 0)
+        if pd.isna(raw_capacity) or str(raw_capacity).strip() == "":
+            continue
+
+        try:
+            annual_capacity_tons = float(raw_capacity or 0)
+        except (TypeError, ValueError):
+            continue
+
+        records.append(
+            CapacityRecord(
+                product=product,
+                work_center=work_center,
+                annual_capacity_tons=annual_capacity_tons,
+                utilization_target=_parse_capacity_factor(row.get("EligibleFlag", 1.0)),
+            )
+        )
+
+    return records
+
+
+def _load_capacity_bases(
+    master_folder: str,
+    legacy_capacities: List[CapacityRecord],
+) -> dict[str, List[CapacityRecord]]:
+    try:
+        routing_capacity_path = _find_master_file(master_folder, "master_routing")
+        routing_capacity_df = _read_tabular(routing_capacity_path)
+        routing_capacity_df.columns = [str(c).strip() for c in routing_capacity_df.columns]
+        max_capacities = _parse_capacity_records_from_routing_df(
+            routing_capacity_df,
+            "Max_Capacity_Tons",
+        )
+        planner_capacities = _parse_capacity_records_from_routing_df(
+            routing_capacity_df,
+            "Planner_Capacity_Tons",
+        )
+    except Exception:
+        max_capacities = []
+        planner_capacities = []
+
+    if not max_capacities:
+        max_capacities = list(legacy_capacities)
+    if not planner_capacities:
+        planner_capacities = list(max_capacities)
+
+    return {
+        "Max": max_capacities,
+        "Planner": planner_capacities,
+    }
 
 
 def _parse_routing_df(df: pd.DataFrame) -> List[RoutingRecord]:

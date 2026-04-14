@@ -8,7 +8,7 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Iterable
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -44,6 +44,7 @@ class LicenseInfo:
     note: str
     features: dict[str, Any]
     license_path: str
+    project_root: str = ""
     status: str = "Valid"
 
 
@@ -52,6 +53,21 @@ def _license_candidates(project_root: str) -> list[str]:
         os.path.join(project_root, "licenses", "active", LICENSE_FILENAME),
         os.path.join(project_root, LICENSE_FILENAME),
     ]
+
+
+def _normalized_roots(primary_root: str, fallback_roots: Iterable[str] | None = None) -> list[str]:
+    roots: list[str] = []
+    seen: set[str] = set()
+    for root in [primary_root, *(fallback_roots or [])]:
+        text = str(root or "").strip()
+        if not text:
+            continue
+        normalized = os.path.normcase(os.path.abspath(text))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        roots.append(os.path.abspath(text))
+    return roots
 
 
 def _load_license_payload(path: str) -> dict[str, Any]:
@@ -122,7 +138,7 @@ def _verify_signature(payload: dict[str, Any]) -> None:
         ) from exc
 
 
-def validate_license(project_root: str, today: date | None = None) -> LicenseInfo:
+def _validate_license_from_project_root(project_root: str, today: date | None = None) -> LicenseInfo:
     resolved_license_path = next((path for path in _license_candidates(project_root) if os.path.exists(path)), None)
     if not resolved_license_path:
         expected_paths = "\n".join(f"- {path}" for path in _license_candidates(project_root))
@@ -200,4 +216,45 @@ def validate_license(project_root: str, today: date | None = None) -> LicenseInf
         note=str(payload.get("note") or "").strip(),
         features=payload.get("features") if isinstance(payload.get("features"), dict) else {},
         license_path=resolved_license_path,
+        project_root=os.path.abspath(project_root),
+    )
+
+
+def validate_license(project_root: str, today: date | None = None) -> LicenseInfo:
+    return _validate_license_from_project_root(project_root, today=today)
+
+
+def validate_license_with_fallback(
+    *,
+    primary_root: str,
+    fallback_roots: Iterable[str] | None = None,
+    today: date | None = None,
+) -> LicenseInfo:
+    roots = _normalized_roots(primary_root, fallback_roots)
+    if not roots:
+        raise LicenseValidationError("License validation root is empty.")
+
+    errors: list[tuple[str, str]] = []
+    for root in roots:
+        try:
+            return _validate_license_from_project_root(root, today=today)
+        except LicenseValidationError as exc:
+            errors.append((root, str(exc).strip()))
+
+    non_missing = [message for _root, message in errors if not message.startswith("License file not found.")]
+    if non_missing:
+        root_lines = "\n".join(f"- {root}" for root in roots)
+        raise LicenseValidationError(
+            f"{non_missing[0]}\nChecked these project roots:\n{root_lines}"
+        )
+
+    expected_paths = []
+    for root in roots:
+        expected_paths.extend(_license_candidates(root))
+    expected_lines = "\n".join(f"- {path}" for path in expected_paths)
+    raise LicenseValidationError(
+        "License file not found.\n"
+        "Checked these locations:\n"
+        f"{expected_lines}\n"
+        "Please contact RSCP for a valid license file."
     )

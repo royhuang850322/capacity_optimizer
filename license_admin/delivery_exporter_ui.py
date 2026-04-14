@@ -10,8 +10,13 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+BOOTSTRAP_ROOT = Path(__file__).resolve().parents[1]
+if str(BOOTSTRAP_ROOT) not in sys.path:
+    sys.path.insert(0, str(BOOTSTRAP_ROOT))
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from app.runtime_paths import resolve_runtime_paths
+
+PROJECT_ROOT = resolve_runtime_paths().app_install_dir
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
