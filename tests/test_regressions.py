@@ -448,46 +448,30 @@ class RegressionTests(unittest.TestCase):
                 "Product_Risk",
                 "Allocation_Detail",
                 "Planner_Result_Summary",
-                "Planner_Product_Month",
-                "Allocation_Summary",
-                "Outsource_Summary",
-                "Unmet_Summary",
-                "WC_Load_Pct",
-                "Binary_Feasibility",
                 "Validation_Issues",
                 "Run_Info",
             }
             self.assertTrue(expected_sheets.issubset(set(workbook.sheetnames)))
-            self.assertIn("_Dashboard_Fact", workbook.sheetnames)
-            self.assertEqual(workbook["_Dashboard_Fact"].sheet_state, "hidden")
+            self.assertNotIn("_Dashboard_Fact", workbook.sheetnames)
+            self.assertEqual(
+                [ws.title for ws in workbook.worksheets if ws.sheet_state != "visible"],
+                ["_Dashboard_Helper"],
+            )
             dashboard_ws = workbook["Dashboard"]
-            self.assertEqual(dashboard_ws["H2"].value, "WorkCenter Filter")
-            self.assertEqual(dashboard_ws["H3"].value, "Selection Mode")
-            self.assertEqual(dashboard_ws["I3"].value, "All")
-            allocation_summary_ws = workbook["Allocation_Summary"]
-            allocation_summary_headers = [
-                allocation_summary_ws.cell(1, idx).value
-                for idx in range(1, allocation_summary_ws.max_column + 1)
-            ]
-            self.assertIn("PlannerName", allocation_summary_headers)
-            outsource_summary_ws = workbook["Outsource_Summary"]
-            outsource_summary_headers = [
-                outsource_summary_ws.cell(1, idx).value
-                for idx in range(1, outsource_summary_ws.max_column + 1)
-            ]
-            self.assertIn("PlannerName", outsource_summary_headers)
-            unmet_summary_ws = workbook["Unmet_Summary"]
-            unmet_summary_headers = [
-                unmet_summary_ws.cell(1, idx).value
-                for idx in range(1, unmet_summary_ws.max_column + 1)
-            ]
-            self.assertIn("PlannerName", unmet_summary_headers)
+            self.assertEqual(dashboard_ws["O3"].value, "WorkCenter Filter")
+            self.assertEqual(dashboard_ws["O4"].value, "Selection Mode")
+            self.assertEqual(dashboard_ws["P4"].value, "All")
+            self.assertIsNone(dashboard_ws["X1"].value)
+            self.assertNotIn("Allocation_Summary", workbook.sheetnames)
+            self.assertNotIn("Outsource_Summary", workbook.sheetnames)
+            self.assertNotIn("Unmet_Summary", workbook.sheetnames)
+            self.assertNotIn("Planner_Product_Month", workbook.sheetnames)
+            self.assertNotIn("Binary_Feasibility", workbook.sheetnames)
             detail_ws = workbook["Allocation_Detail"]
             detail_headers = [detail_ws.cell(1, idx).value for idx in range(1, detail_ws.max_column + 1)]
             detail_capacity_idx = detail_headers.index("CapacityShare_Pct") + 1
             self.assertAlmostEqual(detail_ws.cell(2, detail_capacity_idx).value, 0.6, places=6)
-            wc_load_ws = workbook["WC_Load_Pct"]
-            self.assertAlmostEqual(wc_load_ws["B2"].value, 0.8, places=6)
+            self.assertNotIn("WC_Load_Pct", workbook.sheetnames)
             workbook.close()
 
     def test_write_results_preserves_totals_after_planner_traceability_split(self):
@@ -737,26 +721,28 @@ class RegressionTests(unittest.TestCase):
                 "Product_Risk",
                 "Planner_Result_Summary",
                 "Allocation_Detail",
-                "Planner_Product_Month",
-                "Allocation_Summary",
-                "Outsource_Summary",
-                "Unmet_Summary",
-                "WC_Load_Pct",
-                "Binary_Feasibility",
                 "Validation_Issues",
                 "Run_Info",
             }
             self.assertTrue(expected_sheets.issubset(set(workbook.sheetnames)))
-            self.assertIn("_Dashboard_Fact", workbook.sheetnames)
+            self.assertNotIn("_Dashboard_Fact", workbook.sheetnames)
+            self.assertNotIn("Allocation_Summary", workbook.sheetnames)
+            self.assertNotIn("Outsource_Summary", workbook.sheetnames)
+            self.assertNotIn("Unmet_Summary", workbook.sheetnames)
+            self.assertNotIn("Planner_Product_Month", workbook.sheetnames)
+            self.assertNotIn("Binary_Feasibility", workbook.sheetnames)
+            self.assertNotIn("WC_Load_Pct", workbook.sheetnames)
+            self.assertEqual(
+                [ws.title for ws in workbook.worksheets if ws.sheet_state != "visible"],
+                ["_Dashboard_Helper"],
+            )
             detail_ws = workbook["Allocation_Detail"]
             detail_headers = [detail_ws.cell(1, idx).value for idx in range(1, detail_ws.max_column + 1)]
             self.assertIn("Capacity_Basis", detail_headers)
-            allocation_ws = workbook["Allocation_Summary"]
-            allocation_headers = [allocation_ws.cell(1, idx).value for idx in range(1, allocation_ws.max_column + 1)]
-            self.assertIn("Capacity_Basis", allocation_headers)
             dashboard_ws = workbook["Dashboard"]
-            self.assertEqual(dashboard_ws["H2"].value, "WorkCenter Filter")
-            self.assertEqual(dashboard_ws["K3"].value, "All")
+            self.assertEqual(dashboard_ws["O3"].value, "WorkCenter Filter")
+            self.assertEqual(dashboard_ws["R4"].value, "All")
+            self.assertIsNone(dashboard_ws["X1"].value)
             workbook.close()
 
     def test_load_direct_rejects_unrecognized_planner_files(self):
@@ -970,7 +956,6 @@ class RegressionTests(unittest.TestCase):
                 "Bottleneck_Compare",
                 "WC_Heatmap_Compare",
                 "Product_Risk_Compare",
-                "Planner_Compare",
                 "Run_Info",
             }
             self.assertRegex(
@@ -978,11 +963,18 @@ class RegressionTests(unittest.TestCase):
                 r"^Summary of Mode A and Mode B_\d{8}_\d{6}\.xlsx$",
             )
             self.assertTrue(expected_sheets.issubset(set(workbook.sheetnames)))
-            self.assertIn("_Dashboard_Fact", workbook.sheetnames)
-            self.assertEqual(workbook["_Dashboard_Fact"].sheet_state, "hidden")
+            self.assertNotIn("_Dashboard_Fact", workbook.sheetnames)
+            self.assertNotIn("_ModeA_Cap_Fact", workbook.sheetnames)
+            self.assertNotIn("_ModeB_Cap_Fact", workbook.sheetnames)
+            self.assertNotIn("Planner_Compare", workbook.sheetnames)
+            self.assertEqual(
+                [ws.title for ws in workbook.worksheets if ws.sheet_state != "visible"],
+                ["_Dashboard_Helper"],
+            )
             executive_ws = workbook["Executive_Comparison"]
-            self.assertEqual(executive_ws["P2"].value, "WorkCenter Filter")
-            self.assertEqual(executive_ws["Q3"].value, "All")
+            self.assertEqual(executive_ws["O3"].value, "WorkCenter Filter")
+            self.assertEqual(executive_ws["P4"].value, "All")
+            self.assertIsNone(executive_ws["X1"].value)
             workbook.close()
 
     def test_validate_rejects_planner_product_with_multiple_resources(self):
