@@ -22,6 +22,7 @@ from app.data_loader import discover_planner_scenarios
 from app.i18n import normalize_language, ui_text
 from app.run_logging import RUN_LOG_PATH_ENV_VAR
 from app.runtime_paths import RuntimePaths, ensure_workspace_dirs, resolve_runtime_paths, with_workspace_dir
+from app.version import APP_VERSION
 from app.workspace_init import initialize_user_workspace
 
 try:
@@ -61,8 +62,6 @@ except ModuleNotFoundError:
 
 APP_TITLE = "Capacity Optimizer"
 SETTINGS_FILENAME = "launcher_settings.json"
-APP_VERSION = "v1.1.3"
-
 LIGHT_QSS = """
 QWidget {
     background: #f4f6fa;

@@ -11,6 +11,8 @@ if str(project_root) not in sys.path:
 from build_support.packaging_manifest import get_target, iter_data_mappings
 
 target = get_target("modeb_product_analysis")
+icon_path = project_root / "packaging" / "assets" / "modeb_product_analysis.ico"
+version_path = project_root / "packaging" / "ModeBProductAnalysis.version.txt"
 datas = iter_data_mappings(project_root, target_id=target.target_id)
 for package_name in target.metadata_packages:
     datas += copy_metadata(package_name)
@@ -49,6 +51,8 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
+    icon=str(icon_path),
+    version=str(version_path),
 )
 coll = COLLECT(
     exe,

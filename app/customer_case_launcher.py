@@ -14,6 +14,7 @@ from app.modeb_customer_case_report import (
     resolve_modeb_report_selection,
 )
 from app.runtime_paths import RuntimePaths, ensure_workspace_dirs, resolve_runtime_paths
+from app.version import APP_VERSION
 
 try:
     from PySide6.QtCore import Qt, QUrl
@@ -42,7 +43,7 @@ except ModuleNotFoundError:
     PYSIDE6_AVAILABLE = False
 
 
-APP_TITLE = "ModeB Product Analysis Reporter"
+APP_TITLE = f"ModeB Product Analysis Reporter {APP_VERSION}"
 SETTINGS_FILENAME = "modeb_product_analysis_launcher_settings.json"
 
 

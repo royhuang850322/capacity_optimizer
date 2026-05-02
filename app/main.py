@@ -27,6 +27,7 @@ from app.output_writer import write_capacity_basis_results, write_mode_compariso
 from app.run_logging import format_user_error, get_app_logger, setup_run_file_logging
 from app.runtime_paths import ensure_workspace_dirs, resolve_runtime_paths
 from app.validator import has_errors, print_issues, validate
+from app.version import APP_VERSION
 from app.workspace_init import initialize_user_workspace
 from app.models import Config, ValidationIssue
 
@@ -823,7 +824,7 @@ def _selected_scenario(configured_scenario: str | None) -> str | None:
 
 def _banner() -> None:
     click.echo("=" * 60)
-    click.echo("  Chemical Capacity Optimizer  v1.1.3")
+    click.echo(f"  Chemical Capacity Optimizer  {APP_VERSION}")
     click.echo("  Launcher Settings / Excel Workbook + Python Optimization + Excel Reports")
     click.echo("=" * 60)
 

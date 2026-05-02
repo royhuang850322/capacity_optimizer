@@ -52,6 +52,7 @@ from app.i18n import (
     normalize_language,
     report_text,
 )
+from app.version import TOOL_VERSION
 
 
 HDR_FILL = PatternFill("solid", fgColor="1F4E79")
@@ -710,7 +711,7 @@ def _build_run_info_df(config: Config, mode: str) -> pd.DataFrame:
         ("License_Binding_Mode", getattr(config, "license_binding_mode", "")),
         ("License_Machine_Label", getattr(config, "license_machine_label", "")),
         ("Notes", config.notes or ""),
-        ("Tool_Version", "1.1.3"),
+        ("Tool_Version", TOOL_VERSION),
     ]
     return pd.DataFrame(rows, columns=["Parameter", "Value"])
 

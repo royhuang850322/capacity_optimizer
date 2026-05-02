@@ -1,7 +1,9 @@
 param(
     [ValidateSet("CapacityOptimizer", "ModeBProductAnalysis", "All")]
     [string]$Target = "CapacityOptimizer",
-    [switch]$Clean
+    [switch]$Clean,
+    [switch]$CreateZip,
+    [string]$Version = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,6 +49,23 @@ function Invoke-OneFolderBuild {
         --app-name $AppName
 
     Write-Host "Packaged app: $(Join-Path $DistRoot $AppName)"
+
+    if ($CreateZip) {
+        $ResolvedVersion = $Version
+        if ([string]::IsNullOrWhiteSpace($ResolvedVersion)) {
+            $ResolvedVersion = (python -c "from app.version import APP_VERSION; print(APP_VERSION)").Trim()
+        }
+        $DeliveryRoot = Join-Path $ProjectRoot "delivery_packages"
+        New-Item -ItemType Directory -Force -Path $DeliveryRoot | Out-Null
+        $ZipPath = Join-Path $DeliveryRoot "$AppName-$ResolvedVersion-win64.zip"
+        if (Test-Path $ZipPath) {
+            Remove-Item -Force $ZipPath
+        }
+        $DistAppRoot = Join-Path $DistRoot $AppName
+        $ArchivePattern = Join-Path $DistAppRoot "*"
+        Compress-Archive -Path $ArchivePattern -DestinationPath $ZipPath
+        Write-Host "Release zip : $ZipPath"
+    }
 }
 
 Write-Host "Capacity Optimizer - PyInstaller One-Folder Build"
