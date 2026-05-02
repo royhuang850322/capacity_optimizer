@@ -42,7 +42,7 @@ Fill these key fields directly in launcher:
 - `Output File Name`
 - `Run Mode`
 - `Start Year`, `Start Month`, `Horizon Months`
-- `Direct Mode`, `Verbose`, `Skip Validation Errors`
+- `Verbose`, `Skip Validation Errors`
 
 Then click `Save Settings`.
 

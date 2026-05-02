@@ -1,4 +1,6 @@
 param(
+    [ValidateSet("CapacityOptimizer", "ModeBProductAnalysis", "All")]
+    [string]$Target = "CapacityOptimizer",
     [switch]$Clean
 )
 
@@ -6,13 +8,49 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = (Resolve-Path (Join-Path $ScriptDir "..")).Path
-$SpecPath = Join-Path $ScriptDir "CapacityOptimizer.spec"
-$BuildRoot = Join-Path $ProjectRoot "build\\pyinstaller"
+$BuildRoot = Join-Path $ProjectRoot "build\pyinstaller"
 $DistRoot = Join-Path $ProjectRoot "dist"
 
-Write-Host "Chemical Capacity Optimizer - PyInstaller One-Folder Build"
+$Targets = @(
+    @{
+        Name = "CapacityOptimizer"
+        SpecPath = Join-Path $ScriptDir "CapacityOptimizer.spec"
+    },
+    @{
+        Name = "ModeBProductAnalysis"
+        SpecPath = Join-Path $ScriptDir "ModeBProductAnalysis.spec"
+    }
+)
+
+function Invoke-OneFolderBuild {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$BuildTarget
+    )
+
+    $AppName = $BuildTarget.Name
+    $SpecPath = $BuildTarget.SpecPath
+
+    Write-Host ""
+    Write-Host "Building $AppName"
+    Write-Host "Spec file  : $SpecPath"
+
+    python -m PyInstaller `
+        --noconfirm `
+        --clean `
+        --distpath $DistRoot `
+        --workpath $BuildRoot `
+        $SpecPath
+
+    python packaging\verify_onefolder_dist.py `
+        --dist-root (Join-Path $DistRoot $AppName) `
+        --app-name $AppName
+
+    Write-Host "Packaged app: $(Join-Path $DistRoot $AppName)"
+}
+
+Write-Host "Capacity Optimizer - PyInstaller One-Folder Build"
 Write-Host "Project root : $ProjectRoot"
-Write-Host "Spec file    : $SpecPath"
 Write-Host "Build root   : $BuildRoot"
 Write-Host "Dist root    : $DistRoot"
 
@@ -43,17 +81,21 @@ if ($Clean) {
 New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $DistRoot | Out-Null
 
-python -m PyInstaller `
-    --noconfirm `
-    --clean `
-    --distpath $DistRoot `
-    --workpath $BuildRoot `
-    $SpecPath
-
-python packaging\verify_onefolder_dist.py --dist-root (Join-Path $DistRoot "CapacityOptimizer")
+try {
+    if ($Target -eq "All") {
+        foreach ($BuildTarget in $Targets) {
+            Invoke-OneFolderBuild -BuildTarget $BuildTarget
+        }
+    } else {
+        $SelectedTarget = $Targets | Where-Object { $_.Name -eq $Target } | Select-Object -First 1
+        if (-not $SelectedTarget) {
+            throw "Unknown build target: $Target"
+        }
+        Invoke-OneFolderBuild -BuildTarget $SelectedTarget
+    }
+} finally {
+    Pop-Location
+}
 
 Write-Host ""
 Write-Host "Build completed successfully."
-Write-Host "Packaged app: $(Join-Path $DistRoot 'CapacityOptimizer')"
-
-Pop-Location

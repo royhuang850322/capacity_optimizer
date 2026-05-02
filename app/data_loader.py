@@ -1,12 +1,7 @@
 """
 Data loading layer.
 
-Supports two modes:
-  1. PQ mode  – reads from PQ_* sheets already populated inside the Excel template.
-  2. Direct mode – reads planner files from a folder + master data files directly.
-
-The optimizer always works from the in-memory objects; the mode only affects
-where pandas DataFrames come from.
+The runtime reads planner files from a folder plus master data files directly.
 """
 import os
 import glob
@@ -17,6 +12,7 @@ from typing import List, Tuple
 import pandas as pd
 
 from app.models import Config, LoadRecord, CapacityRecord, RoutingRecord
+from app.i18n import normalize_language
 
 
 PLANNER_FILE_RE = re.compile(r"^planner([1-6])_load\.(xlsx|xls|csv)$", re.IGNORECASE)
@@ -80,9 +76,11 @@ def load_config(template_path: str) -> Config:
         run_timestamp=_get("Run_Timestamp"),
         notes=_get("Notes"),
         run_mode=_normalize_run_mode(_get("Run_Mode", "ModeB")),
-        direct_mode=_parse_bool(_get("Direct_Mode", "Yes"), True),
         verbose=_parse_bool(_get("Verbose", "No"), False),
         skip_validation_errors=_parse_bool(_get("Skip_Validation_Errors", "No"), False),
+        language=normalize_language(
+            _get("Language", _get("Report_Language", _get("GUI_Language", "English")))
+        ),
     )
 
 
@@ -123,42 +121,12 @@ def _normalize_run_mode(value) -> str:
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Mode 1: read from PQ output sheets inside the template
+# Folder-based input readers
 # ────────────────────────────────────────────────────────────────────────────
-
-def load_from_template_pq(
-    template_path: str,
-    include_routing: bool = True,
-    selected_scenario: str | None = None,
-) -> Tuple[
-    List[LoadRecord], List[CapacityRecord], List[RoutingRecord]
-]:
-    """Read consolidated data from PQ_* sheets already in the template."""
-    xl = pd.ExcelFile(template_path)
-    load_df = _read_sheet(xl, "PQ_Load_Consolidated")
-    cap_df  = _read_sheet(xl, "PQ_Capacity")
-
-    loads     = _apply_scenario_filter(_parse_load_df(load_df), selected_scenario)
-    caps      = _parse_capacity_df(cap_df)
-    if include_routing:
-        rout_df = _read_sheet(xl, "PQ_Routing")
-        routings = _parse_routing_df(rout_df)
-    else:
-        routings = []
-    return loads, caps, routings
-
-
-def _read_sheet(xl: pd.ExcelFile, sheet: str) -> pd.DataFrame:
-    if sheet not in xl.sheet_names:
-        raise ValueError(f"Sheet '{sheet}' not found in template. "
-                         "Run Power Query or use --direct-mode.")
-    df = xl.parse(sheet, header=0)
-    df.columns = [str(c).strip() for c in df.columns]
-    return df
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Mode 2: read directly from folder + master files (bypasses Power Query)
+# Read directly from folder + master files.
 # ────────────────────────────────────────────────────────────────────────────
 
 def _read_tabular(filepath: str) -> pd.DataFrame:
@@ -257,20 +225,6 @@ def load_direct_mode_a(
     return loads, caps, []
 
 
-def load_direct_mode_a_with_capacity_bases(
-    load_folder: str,
-    master_folder: str,
-    selected_scenario: str | None = None,
-) -> Tuple[List[LoadRecord], dict[str, List[CapacityRecord]], List[RoutingRecord]]:
-    loads, legacy_caps, _ = load_direct(
-        load_folder=load_folder,
-        master_folder=master_folder,
-        routing_filename=None,
-        selected_scenario=selected_scenario,
-    )
-    return loads, _load_capacity_bases(master_folder, legacy_caps), []
-
-
 def load_direct_mode_b(
     load_folder: str,
     master_folder: str,
@@ -293,7 +247,7 @@ def load_direct_mode_b_with_capacity_bases(
     load_folder: str,
     master_folder: str,
     selected_scenario: str | None = None,
-) -> Tuple[List[LoadRecord], dict[str, List[CapacityRecord]], List[RoutingRecord]]:
+) -> Tuple[List[LoadRecord], List[CapacityRecord], dict[str, List[CapacityRecord]], List[RoutingRecord]]:
     loads, legacy_caps, routings = load_direct(
         load_folder=load_folder,
         master_folder=master_folder,
@@ -301,7 +255,7 @@ def load_direct_mode_b_with_capacity_bases(
         routing_required=True,
         selected_scenario=selected_scenario,
     )
-    return loads, _load_capacity_bases(master_folder, legacy_caps), routings
+    return loads, legacy_caps, _load_capacity_bases(master_folder, legacy_caps), routings
 
 
 def load_direct(
@@ -684,44 +638,17 @@ def _parse_capacity_df(df: pd.DataFrame) -> List[CapacityRecord]:
     records = []
     for _, row in df.iterrows():
         try:
-            ut = float(row.get("Utilization_Target", 0.88) or 0.88)
-            if ut > 1.0:
-                ut = ut / 100.0     # tolerate % entry (e.g. 88 → 0.88)
             records.append(CapacityRecord(
                 product=str(row.get("Product", "")).strip(),
                 work_center=str(row.get("WorkCenter", "")).strip(),
                 annual_capacity_tons=float(row.get("Annual_Capacity_Tons", 0) or 0),
-                utilization_target=ut,
+                utilization_target=1.0,
                 effective_from=str(row.get("Effective_From", "") or "").strip() or None,
                 effective_to=str(row.get("Effective_To", "") or "").strip() or None,
             ))
         except Exception as e:
             print(f"  [WARN] Skipping capacity row due to: {e}  →  {dict(row)}")
     return records
-
-
-def _parse_capacity_factor(raw_value: object) -> float:
-    if raw_value is None:
-        return 1.0
-
-    text = str(raw_value).strip()
-    if text == "":
-        return 1.0
-
-    normalized = text.upper()
-    if normalized in {"Y", "YES", "TRUE"}:
-        return 1.0
-    if normalized in {"N", "NO", "FALSE"}:
-        return 0.0
-
-    try:
-        value = float(raw_value)
-    except (TypeError, ValueError):
-        return 1.0
-
-    if value > 1.0:
-        value = value / 100.0
-    return max(value, 0.0)
 
 
 def _parse_capacity_records_from_routing_df(
@@ -753,7 +680,7 @@ def _parse_capacity_records_from_routing_df(
                 product=product,
                 work_center=work_center,
                 annual_capacity_tons=annual_capacity_tons,
-                utilization_target=_parse_capacity_factor(row.get("EligibleFlag", 1.0)),
+                utilization_target=1.0,
             )
         )
 
@@ -813,7 +740,7 @@ def _parse_routing_df(df: pd.DataFrame) -> List[RoutingRecord]:
             elif ef_str in ("N", "NO", "FALSE", "0"):
                 eligible = False
             else:
-                # Numeric value (e.g. 0.88) → treat as eligible if > 0
+                # Numeric value (e.g. 0.88) -> treat as eligible if > 0
                 try:
                     eligible = float(raw_ef) > 0
                 except (ValueError, TypeError):

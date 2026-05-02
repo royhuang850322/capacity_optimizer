@@ -6,12 +6,9 @@ ModeA:
   - each (product, work center) row from master_capacity is eligible
 
 ModeB:
-  - routing aware
-  - regular products are allocated in two internal passes:
-      1. Primary / Capacity routes
-      2. Alternative / lower-priority internal routes
-  - products with a product-level Toller route are scheduled after all other products
-  - residual demand for Toller products is converted to outsourced tons
+  - Stage 1: run the same capacity-only baseline as ModeA
+  - Stage 2: reroute only the Stage 1 residual through product-level routing
+  - Stage 3: classify the remaining residual as Toller or Unmet
 """
 from __future__ import annotations
 
@@ -63,7 +60,7 @@ def run_optimization_mode_a(
         )
 
         month_results = list(phase_results)
-        month_results.extend(_build_unmet_rows(month, residual, demand, product_meta))
+        month_results.extend(_build_unmet_rows(month, residual, demand, product_meta, allocation_source=""))
         _apply_final_balances(
             month_results,
             final_unmet={(month, product): tons for product, tons in residual.items()},
@@ -76,16 +73,22 @@ def run_optimization_mode_a(
 def run_optimization_mode_b(
     months: List[str],
     loads: List[LoadRecord],
-    capacities: List[CapacityRecord],
+    baseline_capacities: List[CapacityRecord],
+    routing_capacities: List[CapacityRecord],
     routings: List[RoutingRecord],
     verbose: bool = False,
 ) -> Tuple[List[AllocationResult], Set[str]]:
     demand, product_meta = _build_demand(loads)
-    eff_cap = _build_eff_cap(capacities)
-    primary_routes, secondary_routes, toller_products = _build_mode_b_routes(
-        product_meta=product_meta,
-        demand=demand,
-        eff_cap=eff_cap,
+    baseline_eff_cap = _build_eff_cap(baseline_capacities)
+    routing_eff_cap = _build_eff_cap(routing_capacities)
+
+    stage1_routes = {
+        product: _build_capacity_only_routes(product, baseline_eff_cap)
+        for _month, product in demand
+    }
+    stage2_routes, toller_products = _build_mode_b_stage2_routes(
+        all_products={product for _month, product in demand},
+        eff_cap=routing_eff_cap,
         routings=routings,
     )
 
@@ -95,84 +98,78 @@ def run_optimization_mode_b(
         if not monthly_products:
             continue
 
-        regular_products = [product for product in monthly_products if product not in toller_products]
-        toller_only_products = [product for product in monthly_products if product in toller_products]
-
-        wc_used: Dict[str, float] = {}
         month_results: List[AllocationResult] = []
 
-        regular_primary_results, regular_primary_residual = _run_lp_for_products(
+        stage1_results, residual_after_capacity = _run_lp_for_products(
             month=month,
-            products=regular_products,
-            demand=_slice_demand(demand, month, regular_products),
+            products=monthly_products,
+            demand=_slice_demand(demand, month, monthly_products),
             full_demand=demand,
             product_meta=product_meta,
-            eff_cap=eff_cap,
-            eligible=primary_routes,
+            eff_cap=baseline_eff_cap,
+            eligible=stage1_routes,
             wc_limits={},
+            allocation_source="Capacity_Base",
             verbose=verbose,
-            phase_label="Regular-Primary",
+            phase_label="Capacity-Base",
         )
-        month_results.extend(regular_primary_results)
-        _accumulate_wc_used(wc_used, regular_primary_results, eff_cap)
+        month_results.extend(stage1_results)
 
-        regular_alt_results, regular_final_residual = _run_lp_for_products(
+        wc_used_after_stage1: Dict[str, float] = {}
+        _accumulate_wc_used(wc_used_after_stage1, stage1_results, routing_eff_cap)
+
+        stage2_products = [
+            product
+            for product, tons in residual_after_capacity.items()
+            if tons > EPSILON and stage2_routes.get(product)
+        ]
+        stage2_results, stage2_residual = _run_lp_for_products(
             month=month,
-            products=regular_products,
-            demand=_residual_to_demand(month, regular_primary_residual),
+            products=stage2_products,
+            demand=_residual_to_demand(month, residual_after_capacity),
             full_demand=demand,
             product_meta=product_meta,
-            eff_cap=eff_cap,
-            eligible=secondary_routes,
-            wc_limits=_remaining_wc_limits(wc_used),
+            eff_cap=routing_eff_cap,
+            eligible=stage2_routes,
+            wc_limits=_remaining_wc_limits(wc_used_after_stage1),
+            allocation_source="Routing_Reroute",
             verbose=verbose,
-            phase_label="Regular-Alternative",
+            phase_label="Routing-Reroute",
         )
-        month_results.extend(regular_alt_results)
-        _accumulate_wc_used(wc_used, regular_alt_results, eff_cap)
+        month_results.extend(stage2_results)
 
-        toller_primary_results, toller_primary_residual = _run_lp_for_products(
+        residual_after_routing = dict(residual_after_capacity)
+        for product in stage2_products:
+            residual_after_routing[product] = stage2_residual.get(product, 0.0)
+
+        final_unmet: Dict[Tuple[str, str], float] = {}
+        final_outsourced: Dict[Tuple[str, str], float] = {}
+        outsource_residual: Dict[str, float] = {}
+        unmet_residual: Dict[str, float] = {}
+        for product, residual_tons in residual_after_routing.items():
+            if residual_tons <= EPSILON:
+                continue
+            if product in toller_products:
+                final_outsourced[(month, product)] = residual_tons
+                outsource_residual[product] = residual_tons
+            else:
+                final_unmet[(month, product)] = residual_tons
+                unmet_residual[product] = residual_tons
+
+        month_results.extend(_build_outsource_rows(month, outsource_residual, demand, product_meta))
+        month_results.extend(_build_unmet_rows(month, unmet_residual, demand, product_meta))
+
+        _apply_stage_trace(
+            month_results,
             month=month,
-            products=toller_only_products,
-            demand=_slice_demand(demand, month, toller_only_products),
-            full_demand=demand,
-            product_meta=product_meta,
-            eff_cap=eff_cap,
-            eligible=primary_routes,
-            wc_limits=_remaining_wc_limits(wc_used),
-            verbose=verbose,
-            phase_label="Toller-Primary",
+            residual_after_capacity=residual_after_capacity,
+            residual_after_routing=residual_after_routing,
         )
-        month_results.extend(toller_primary_results)
-        _accumulate_wc_used(wc_used, toller_primary_results, eff_cap)
-
-        toller_alt_results, toller_final_residual = _run_lp_for_products(
-            month=month,
-            products=toller_only_products,
-            demand=_residual_to_demand(month, toller_primary_residual),
-            full_demand=demand,
-            product_meta=product_meta,
-            eff_cap=eff_cap,
-            eligible=secondary_routes,
-            wc_limits=_remaining_wc_limits(wc_used),
-            verbose=verbose,
-            phase_label="Toller-Alternative",
+        _apply_final_balances(
+            month_results,
+            final_unmet=final_unmet,
+            final_outsourced=final_outsourced,
         )
-        month_results.extend(toller_alt_results)
-        _accumulate_wc_used(wc_used, toller_alt_results, eff_cap)
-
-        month_results.extend(_build_unmet_rows(month, regular_final_residual, demand, product_meta))
-        month_results.extend(_build_outsource_rows(month, toller_final_residual, demand, product_meta))
-
-        final_unmet = {
-            (month, product): tons
-            for product, tons in regular_final_residual.items()
-        }
-        final_outsourced = {
-            (month, product): tons
-            for product, tons in toller_final_residual.items()
-        }
-        _apply_final_balances(month_results, final_unmet, final_outsourced)
 
         all_results.extend(month_results)
 
@@ -180,7 +177,14 @@ def run_optimization_mode_b(
 
 
 def run_optimization(months, loads, capacities, routings, verbose=False):
-    results, _ = run_optimization_mode_b(months, loads, capacities, routings, verbose)
+    results, _ = run_optimization_mode_b(
+        months,
+        loads,
+        capacities,
+        capacities,
+        routings,
+        verbose,
+    )
     return results
 
 
@@ -234,148 +238,50 @@ def _build_capacity_only_routes(
     )
 
 
-def _build_mode_b_routes(
-    product_meta: ProductMetaMap,
-    demand: DemandMap,
+def _build_mode_b_stage2_routes(
+    all_products: Set[str],
     eff_cap: EffCapMap,
     routings: List[RoutingRecord],
-) -> Tuple[RouteMap, RouteMap, Set[str]]:
-    routing_by_product: Dict[str, List[RoutingRecord]] = {}
-    routing_by_family: Dict[str, List[RoutingRecord]] = {}
-    for routing in routings:
-        if routing.product:
-            routing_by_product.setdefault(routing.product, []).append(routing)
-        elif routing.product_family:
-            routing_by_family.setdefault(routing.product_family, []).append(routing)
-
-    primary_routes: RouteMap = {}
-    secondary_routes: RouteMap = {}
+) -> Tuple[RouteMap, Set[str]]:
+    product_rows: Dict[str, List[RoutingRecord]] = {}
     toller_products: Set[str] = set()
 
-    all_products = {product for _month, product in demand}
+    for routing in routings:
+        if not routing.product:
+            continue
+        product_rows.setdefault(routing.product, []).append(routing)
+        if routing.eligible_flag and _is_toller_route(routing.route_type):
+            toller_products.add(routing.product)
+
+    routes_by_product: RouteMap = {}
     for product in all_products:
-        family, _plant = product_meta.get(product, ("", ""))
-        family_rows = routing_by_family.get(family, [])
-        product_rows = routing_by_product.get(product, [])
-        matched_any = bool(family_rows or product_rows)
+        routes: Dict[str, Tuple[int, str, float]] = {}
+        for routing in product_rows.get(product, []):
+            if not routing.eligible_flag or _is_toller_route(routing.route_type):
+                continue
+            wc = routing.work_center
+            if not wc or eff_cap.get((product, wc), 0.0) <= 0:
+                continue
+            candidate = (routing.priority, routing.route_type, _route_penalty(routing))
+            existing = routes.get(wc)
+            if existing is None or candidate[0] < existing[0]:
+                routes[wc] = candidate
 
-        if any(_is_toller_route(row.route_type) and row.eligible_flag for row in product_rows):
-            toller_products.add(product)
-
-        if matched_any:
-            internal_routes = _build_internal_routes(
-                product=product,
-                eff_cap=eff_cap,
-                family_rows=family_rows,
-                product_rows=product_rows,
+        routes_by_product[product] = [
+            (wc, priority, route_type, penalty)
+            for wc, (priority, route_type, penalty) in sorted(
+                routes.items(),
+                key=lambda item: (item[1][0], item[0]),
             )
-        else:
-            internal_routes = _build_capacity_only_routes(product, eff_cap)
-
-        primary_routes[product] = [
-            route
-            for route in internal_routes
-            if _is_primary_like(route[2])
-        ]
-        secondary_routes[product] = [
-            route
-            for route in internal_routes
-            if not _is_primary_like(route[2])
         ]
 
-    return primary_routes, secondary_routes, toller_products
-
-
-def _build_internal_routes(
-    product: str,
-    eff_cap: EffCapMap,
-    family_rows: List[RoutingRecord],
-    product_rows: List[RoutingRecord],
-) -> List[EligibleRoute]:
-    routes: Dict[str, Tuple[int, str, float]] = {}
-    blocked_wcs: Set[str] = set()
-
-    for routing in family_rows:
-        _merge_family_route(
-            product=product,
-            eff_cap=eff_cap,
-            routes=routes,
-            blocked_wcs=blocked_wcs,
-            routing=routing,
-        )
-
-    for routing in product_rows:
-        _override_product_route(
-            product=product,
-            eff_cap=eff_cap,
-            routes=routes,
-            blocked_wcs=blocked_wcs,
-            routing=routing,
-        )
-
-    return [
-        (wc, priority, route_type, penalty)
-        for wc, (priority, route_type, penalty) in sorted(
-            routes.items(),
-            key=lambda item: (item[1][0], item[0]),
-        )
-    ]
+    return routes_by_product, toller_products
 
 
 def _route_penalty(routing: RoutingRecord) -> float:
     if routing.penalty_weight > 0:
         return routing.penalty_weight
     return float(PRIORITY_BASE_PENALTY ** (routing.priority - 1))
-
-
-def _merge_family_route(
-    product: str,
-    eff_cap: EffCapMap,
-    routes: Dict[str, Tuple[int, str, float]],
-    blocked_wcs: Set[str],
-    routing: RoutingRecord,
-) -> None:
-    if _is_toller_route(routing.route_type):
-        return
-
-    wc = routing.work_center
-    if not wc:
-        return
-    if not routing.eligible_flag:
-        blocked_wcs.add(wc)
-        routes.pop(wc, None)
-        return
-    if wc in blocked_wcs or (product, wc) not in eff_cap:
-        return
-
-    candidate = (routing.priority, routing.route_type, _route_penalty(routing))
-    existing = routes.get(wc)
-    if existing is None or candidate[0] < existing[0]:
-        routes[wc] = candidate
-
-
-def _override_product_route(
-    product: str,
-    eff_cap: EffCapMap,
-    routes: Dict[str, Tuple[int, str, float]],
-    blocked_wcs: Set[str],
-    routing: RoutingRecord,
-) -> None:
-    if _is_toller_route(routing.route_type):
-        return
-
-    wc = routing.work_center
-    if not wc:
-        return
-    if not routing.eligible_flag:
-        blocked_wcs.add(wc)
-        routes.pop(wc, None)
-        return
-
-    blocked_wcs.discard(wc)
-    if (product, wc) not in eff_cap:
-        return
-    routes[wc] = (routing.priority, routing.route_type, _route_penalty(routing))
 
 
 def _products_in_month(month: str, demand: DemandMap) -> List[str]:
@@ -411,6 +317,7 @@ def _run_lp_for_products(
     eff_cap: EffCapMap,
     eligible: RouteMap,
     wc_limits: Dict[str, float],
+    allocation_source: str = "",
     verbose: bool = False,
     phase_label: str = "",
 ) -> Tuple[List[AllocationResult], Dict[str, float]]:
@@ -503,6 +410,7 @@ def _run_lp_for_products(
                 outsourced_tons=0.0,
                 unmet_tons=0.0,
                 capacity_share_pct=round(100.0 * allocated_tons / cap, 2),
+                allocation_source=allocation_source,
             ))
 
     if verbose:
@@ -520,6 +428,7 @@ def _build_unmet_rows(
     residual: Dict[str, float],
     full_demand: DemandMap,
     product_meta: ProductMetaMap,
+    allocation_source: str = "Unmet",
 ) -> List[AllocationResult]:
     rows: List[AllocationResult] = []
     for product, unmet_tons in residual.items():
@@ -540,6 +449,7 @@ def _build_unmet_rows(
             outsourced_tons=0.0,
             unmet_tons=round(unmet_tons, 4),
             capacity_share_pct=0.0,
+            allocation_source=allocation_source,
         ))
     return rows
 
@@ -549,6 +459,7 @@ def _build_outsource_rows(
     residual: Dict[str, float],
     full_demand: DemandMap,
     product_meta: ProductMetaMap,
+    allocation_source: str = "Toller",
 ) -> List[AllocationResult]:
     rows: List[AllocationResult] = []
     for product, outsourced_tons in residual.items():
@@ -569,8 +480,28 @@ def _build_outsource_rows(
             outsourced_tons=round(outsourced_tons, 4),
             unmet_tons=0.0,
             capacity_share_pct=0.0,
+            allocation_source=allocation_source,
         ))
     return rows
+
+
+def _apply_stage_trace(
+    results: List[AllocationResult],
+    month: str,
+    residual_after_capacity: Dict[str, float],
+    residual_after_routing: Dict[str, float],
+) -> None:
+    for result in results:
+        if result.month != month:
+            continue
+        result.residual_after_capacity_tons = round(
+            residual_after_capacity.get(result.product, 0.0),
+            4,
+        )
+        result.residual_after_routing_tons = round(
+            residual_after_routing.get(result.product, 0.0),
+            4,
+        )
 
 
 def _apply_final_balances(
@@ -614,10 +545,6 @@ def _remaining_wc_limits(wc_used: Dict[str, float]) -> Dict[str, float]:
 
 def _is_toller_route(route_type: str) -> bool:
     return route_type.strip().lower() == "toller"
-
-
-def _is_primary_like(route_type: str) -> bool:
-    return route_type.strip().lower() in {"primary", "capacity"}
 
 
 def _get_penalty(

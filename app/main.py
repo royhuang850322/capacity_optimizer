@@ -19,10 +19,7 @@ from app.create_template import refresh_control_workbook_license_sheet
 from app.data_loader import (
     load_config,
     load_direct_mode_a,
-    load_direct_mode_a_with_capacity_bases,
-    load_direct_mode_b,
     load_direct_mode_b_with_capacity_bases,
-    load_from_template_pq,
 )
 from app.load_pressure import build_dashboard_fact_frame
 from app.optimizer import run_optimization_mode_a, run_optimization_mode_b
@@ -51,13 +48,6 @@ _ACTIVE_LOG_PATH: Path | None = None
     help="Override Run_Mode from the control workbook.",
 )
 @click.option(
-    "--input-mode",
-    type=click.Choice(["config", "direct", "pq"], case_sensitive=False),
-    default="config",
-    show_default=True,
-    help="Override workbook input mode, or keep the workbook setting.",
-)
-@click.option(
     "--verbosity",
     type=click.Choice(["config", "verbose", "quiet"], case_sensitive=False),
     default="config",
@@ -79,7 +69,6 @@ _ACTIVE_LOG_PATH: Path | None = None
 def main(
     input_template: str,
     mode: str | None,
-    input_mode: str,
     verbosity: str,
     validation_policy: str,
     output_name: str | None,
@@ -120,8 +109,6 @@ def main(
 
     if mode:
         config.run_mode = _normalize_cli_mode(mode)
-    if input_mode != "config":
-        config.direct_mode = input_mode == "direct"
     if verbosity != "config":
         config.verbose = verbosity == "verbose"
     if validation_policy != "config":
@@ -153,10 +140,9 @@ def run_with_config(
 
     logger.info("Optimizer run started.")
     logger.debug(
-        "Run source=%s | mode=%s direct_mode=%s output=%s",
+        "Run source=%s | mode=%s output=%s",
         "workbook" if input_template else "launcher",
         config.run_mode,
-        config.direct_mode,
         config.output_folder,
     )
 
@@ -261,7 +247,6 @@ def run_with_config(
     click.echo(f"  Input loads  : {config.input_load_folder}")
     click.echo(f"  Input master : {config.input_master_folder}")
     click.echo(f"  Output       : {config.output_folder}")
-    click.echo(f"  Direct mode  : {'Yes' if config.direct_mode else 'No'}")
     click.echo(f"  License      : {config.license_status}")
     click.echo(f"  Licensed to  : {config.licensed_to}")
     click.echo(f"  Expires      : {config.license_expiry}")
@@ -270,26 +255,24 @@ def run_with_config(
     if _ACTIVE_LOG_PATH is not None:
         click.echo(f"  Log file     : {_ACTIVE_LOG_PATH}")
     logger.debug(
-        "Resolved config | run_mode=%s scenario=%s direct_mode=%s",
+        "Resolved config | run_mode=%s scenario=%s",
         config.run_mode,
         config.scenario_name,
-        config.direct_mode,
     )
 
-    if config.direct_mode:
-        try:
-            _validate_direct_mode_setup(config, modes_to_run, runtime_paths.is_frozen)
-        except Exception as exc:
-            _fatal(
-                summary="Direct-mode input folder validation failed.",
-                code="OPT-1301",
-                details=str(exc),
-                hints=[
-                    "Check Project Root / Input / Output folders in launcher settings.",
-                    "Confirm all required planner and master files exist.",
-                ],
-                debug_details=traceback.format_exc(),
-            )
+    try:
+        _validate_input_setup(config, modes_to_run, runtime_paths.is_frozen)
+    except Exception as exc:
+        _fatal(
+            summary="Input folder validation failed.",
+            code="OPT-1301",
+            details=str(exc),
+            hints=[
+                "Check Project Root / Input / Output folders in launcher settings.",
+                "Confirm all required planner and master files exist.",
+            ],
+            debug_details=traceback.format_exc(),
+        )
 
     click.echo("\n[2/4] Loading, validating, and optimizing")
     run_payloads: dict[str, dict[str, Any]] = {}
@@ -299,13 +282,18 @@ def run_with_config(
         click.echo(f"\n  --- {selected_mode} ---")
         logger.info("Mode started: %s", selected_mode)
         try:
-            loads, capacities_by_basis, routings = _load_mode_data_with_capacity_bases(
-                input_template=input_template,
-                direct_mode=config.direct_mode,
-                selected_mode=selected_mode,
-                config=config,
-                selected_scenario=selected_scenario,
-            )
+            if selected_mode == "ModeA":
+                loads, capacities, routings = load_direct_mode_a(
+                    load_folder=config.input_load_folder,
+                    master_folder=config.input_master_folder,
+                    selected_scenario=selected_scenario,
+                )
+            else:
+                loads, baseline_capacities, raw_capacities_by_basis, routings = load_direct_mode_b_with_capacity_bases(
+                    load_folder=config.input_load_folder,
+                    master_folder=config.input_master_folder,
+                    selected_scenario=selected_scenario,
+                )
         except Exception as exc:
             _fatal(
                 summary=f"{selected_mode} failed during data loading.",
@@ -319,18 +307,79 @@ def run_with_config(
             )
 
         click.echo(f"    Load records  : {len(loads):,}")
-        click.echo(
-            "    Capacity rows : "
-            f"Max={len(capacities_by_basis['Max']):,} | Planner={len(capacities_by_basis['Planner']):,}"
-        )
+        if selected_mode == "ModeA":
+            click.echo(f"    Capacity rows : {len(capacities):,}")
+        else:
+                click.echo(
+                    "    Capacity rows : "
+                    f"Baseline={len(baseline_capacities):,} | "
+                    f"Max={len(raw_capacities_by_basis['Max']):,} | Planner={len(raw_capacities_by_basis['Planner']):,}"
+                )
         click.echo(f"    Routing rows  : {len(routings):,}")
+        if selected_mode == "ModeA":
+            issues = validate(loads, capacities, routings, mode=selected_mode)
+            if issues:
+                click.echo("      Validation    : Capacity")
+                print_issues(issues)
+            else:
+                click.echo("      Validation    : no issues")
+
+            if has_errors(issues) and not config.skip_validation_errors:
+                _fatal(
+                    summary="Validation found ERROR-level issues.",
+                    code="OPT-1501",
+                    details=f"{selected_mode} stopped because validation failed.",
+                    hints=[
+                        "Fix source data issues reported above and rerun.",
+                        "If you need a forced run, set Skip Validation Errors = Yes.",
+                    ],
+                )
+
+            results = run_optimization_mode_a(
+                months=months,
+                loads=loads,
+                capacities=capacities,
+                verbose=config.verbose,
+            )
+            metrics = _build_run_metrics(
+                selected_mode=selected_mode,
+                capacity_basis="Capacity",
+                loads=loads,
+                results=results,
+                months=months,
+                scenario_name=config.scenario_name,
+            )
+            _print_run_metrics(metrics)
+            metrics_by_mode[selected_mode] = metrics
+            logger.debug("Mode metrics [%s]: %s", selected_mode, metrics_by_mode[selected_mode])
+            run_payloads[selected_mode] = {
+                "loads": loads,
+                "capacities": capacities,
+                "routings": routings,
+                "issues": issues,
+                "results": results,
+                "toller_products": set(),
+                "metrics": metrics,
+            }
+            continue
+
+        capacities_by_basis = {
+            basis: _merge_capacity_records(baseline_capacities, raw_capacities_by_basis[basis])
+            for basis in ("Max", "Planner")
+        }
         basis_payloads: dict[str, dict[str, Any]] = {}
         combined_issues: list[ValidationIssue] = []
 
         for capacity_basis in ("Max", "Planner"):
             click.echo(f"    [{capacity_basis}]")
             capacities = capacities_by_basis[capacity_basis]
-            issues = validate(loads, capacities, routings, mode=selected_mode)
+            issues = validate(
+                loads,
+                baseline_capacities,
+                routings,
+                mode=selected_mode,
+                routing_capacities=capacities,
+            )
             _basis_print_issues(capacity_basis, issues)
             combined_issues.extend(_prefix_issues(capacity_basis, issues))
 
@@ -345,42 +394,23 @@ def run_with_config(
                     ],
                 )
 
-            if selected_mode == "ModeA":
-                results = run_optimization_mode_a(
-                    months=months,
-                    loads=loads,
-                    capacities=capacities,
-                    verbose=config.verbose,
-                )
-                toller_products = set()
-            else:
-                results, toller_products = run_optimization_mode_b(
-                    months=months,
-                    loads=loads,
-                    capacities=capacities,
-                    routings=routings,
-                    verbose=config.verbose,
-                )
+            results, toller_products = run_optimization_mode_b(
+                months=months,
+                loads=loads,
+                baseline_capacities=baseline_capacities,
+                routing_capacities=capacities,
+                routings=routings,
+                verbose=config.verbose,
+            )
 
-            total_demand = _total_demand(loads, months)
-            total_internal_allocated = _total_internal_allocated(results)
-            total_outsourced = _total_outsourced(results)
-            total_unmet = _total_unmet(results)
-            total_supplied = total_internal_allocated + total_outsourced
-            service_level = 100.0 * total_supplied / total_demand if total_demand > 0 else 0.0
-
-            metrics = {
-                "mode": selected_mode,
-                "capacity_basis": capacity_basis,
-                "scenario_name": config.scenario_name,
-                "total_demand": total_demand,
-                "total_internal_allocated": total_internal_allocated,
-                "total_outsourced": total_outsourced,
-                "total_unmet": total_unmet,
-                "service_level": service_level,
-                "result_rows": len(results),
-                "months": len(months),
-            }
+            metrics = _build_run_metrics(
+                selected_mode=selected_mode,
+                capacity_basis=capacity_basis,
+                loads=loads,
+                results=results,
+                months=months,
+                scenario_name=config.scenario_name,
+            )
             basis_payloads[capacity_basis] = {
                 "capacities": capacities,
                 "results": results,
@@ -388,16 +418,13 @@ def run_with_config(
                 "toller_products": toller_products,
                 "metrics": metrics,
             }
-            click.echo(f"      Total demand    : {total_demand:>12,.1f} tons")
-            click.echo(f"      Internal alloc. : {total_internal_allocated:>12,.1f} tons")
-            click.echo(f"      Outsourced      : {total_outsourced:>12,.1f} tons")
-            click.echo(f"      Total unmet     : {total_unmet:>12,.1f} tons")
-            click.echo(f"      Service level   : {service_level:>11.1f}%")
+            _print_run_metrics(metrics)
 
         metrics_by_mode[selected_mode] = basis_payloads["Planner"]["metrics"]
         logger.debug("Mode metrics [%s]: %s", selected_mode, metrics_by_mode[selected_mode])
         run_payloads[selected_mode] = {
             "loads": loads,
+            "baseline_capacities": baseline_capacities,
             "capacities_by_basis": capacities_by_basis,
             "routings": routings,
             "basis_payloads": basis_payloads,
@@ -409,23 +436,41 @@ def run_with_config(
     for selected_mode in modes_to_run:
         payload = run_payloads[selected_mode]
         try:
-            output_paths[selected_mode] = write_capacity_basis_results(
-                basis_results={
-                    basis: payload["basis_payloads"][basis]["results"]
-                    for basis in ("Max", "Planner")
-                },
-                loads=payload["loads"],
-                basis_capacities=payload["capacities_by_basis"],
-                routings=payload["routings"],
-                config=config,
-                issues=payload["issues"],
-                months=months,
-                mode=selected_mode,
-                toller_products_by_basis={
-                    basis: payload["basis_payloads"][basis]["toller_products"]
-                    for basis in ("Max", "Planner")
-                },
-            )
+            if selected_mode == "ModeA":
+                output_paths[selected_mode] = write_results(
+                    results=payload["results"],
+                    loads=payload["loads"],
+                    capacities=payload["capacities"],
+                    routings=payload["routings"],
+                    config=config,
+                    issues=payload["issues"],
+                    months=months,
+                    mode=selected_mode,
+                    toller_products=payload["toller_products"],
+                    unmet_capacities=payload["capacities"],
+                )
+            else:
+                output_paths[selected_mode] = write_capacity_basis_results(
+                    basis_results={
+                        basis: payload["basis_payloads"][basis]["results"]
+                        for basis in ("Max", "Planner")
+                    },
+                    loads=payload["loads"],
+                    basis_capacities=payload["capacities_by_basis"],
+                    routings=payload["routings"],
+                    config=config,
+                    issues=payload["issues"],
+                    months=months,
+                    mode=selected_mode,
+                    toller_products_by_basis={
+                        basis: payload["basis_payloads"][basis]["toller_products"]
+                        for basis in ("Max", "Planner")
+                    },
+                    unmet_capacities_by_basis={
+                        basis: payload["baseline_capacities"]
+                        for basis in ("Max", "Planner")
+                    },
+                )
         except Exception as exc:
             _fatal(
                 summary=f"Failed to write {selected_mode} output workbook.",
@@ -444,12 +489,12 @@ def run_with_config(
         try:
             comparison_path = write_mode_comparison_summary(
                 mode_results={
-                    mode_name: run_payloads[mode_name]["basis_payloads"]["Planner"]["results"]
+                    mode_name: _mode_results_for_summary(run_payloads[mode_name])
                     for mode_name in ("ModeA", "ModeB")
                 },
                 mode_loads={mode_name: run_payloads[mode_name]["loads"] for mode_name in ("ModeA", "ModeB")},
                 mode_capacities={
-                    mode_name: run_payloads[mode_name]["capacities_by_basis"]["Planner"]
+                    mode_name: _mode_capacities_for_summary(run_payloads[mode_name])
                     for mode_name in ("ModeA", "ModeB")
                 },
                 mode_routings={mode_name: run_payloads[mode_name]["routings"] for mode_name in ("ModeA", "ModeB")},
@@ -458,27 +503,24 @@ def run_with_config(
                 metrics_by_mode=metrics_by_mode,
                 dashboard_facts_by_mode={
                     mode_name: build_dashboard_fact_frame(
-                        mode=mode_name,
-                        results=run_payloads[mode_name]["basis_payloads"]["Planner"]["results"],
-                        loads=run_payloads[mode_name]["loads"],
-                        capacities=run_payloads[mode_name]["capacities_by_basis"]["Planner"],
-                        routings=run_payloads[mode_name]["routings"],
-                    )
-                    for mode_name in ("ModeA", "ModeB")
-                },
-                capacity_basis_payloads_by_mode={
-                    mode_name: {
-                        "basis_results": {
-                            basis: run_payloads[mode_name]["basis_payloads"][basis]["results"]
-                            for basis in ("Max", "Planner")
-                        },
-                        "basis_capacities": run_payloads[mode_name]["capacities_by_basis"],
-                        "loads": run_payloads[mode_name]["loads"],
-                        "routings": run_payloads[mode_name]["routings"],
-                    }
-                    for mode_name in ("ModeA", "ModeB")
-                },
-            )
+                    mode=mode_name,
+                    results=_mode_results_for_summary(run_payloads[mode_name]),
+                    loads=run_payloads[mode_name]["loads"],
+                    capacities=_mode_capacities_for_summary(run_payloads[mode_name]),
+                    routings=run_payloads[mode_name]["routings"],
+                    unmet_capacities=_mode_unmet_capacities_for_summary(run_payloads[mode_name]),
+                )
+                for mode_name in ("ModeA", "ModeB")
+            },
+            capacity_basis_payloads_by_mode={
+                mode_name: _mode_capacity_basis_payload(run_payloads[mode_name])
+                for mode_name in ("ModeA", "ModeB")
+            },
+            mode_unmet_capacities={
+                mode_name: _mode_unmet_capacities_for_summary(run_payloads[mode_name])
+                for mode_name in ("ModeA", "ModeB")
+            },
+        )
         except Exception as exc:
             _fatal(
                 summary="Failed to write ModeA/ModeB summary workbook.",
@@ -499,64 +541,106 @@ def run_with_config(
     logger.info("Optimizer run completed successfully.")
 
 
-def _load_mode_data(
-    input_template: str | None,
-    direct_mode: bool,
+def _build_run_metrics(
+    *,
     selected_mode: str,
-    config,
-    selected_scenario: str | None,
+    capacity_basis: str,
+    loads,
+    results,
+    months: list[str],
+    scenario_name: str,
+) -> dict[str, Any]:
+    total_demand = _total_demand(loads, months)
+    total_internal_allocated = _total_internal_allocated(results)
+    total_outsourced = _total_outsourced(results)
+    total_unmet = _total_unmet(results)
+    total_supplied = total_internal_allocated + total_outsourced
+    service_level = 100.0 * total_supplied / total_demand if total_demand > 0 else 0.0
+    return {
+        "mode": selected_mode,
+        "capacity_basis": capacity_basis,
+        "scenario_name": scenario_name,
+        "total_demand": total_demand,
+        "total_internal_allocated": total_internal_allocated,
+        "total_outsourced": total_outsourced,
+        "total_unmet": total_unmet,
+        "service_level": service_level,
+        "result_rows": len(results),
+        "months": len(months),
+    }
+
+
+def _print_run_metrics(metrics: dict[str, Any]) -> None:
+    click.echo(f"      Total demand    : {metrics['total_demand']:>12,.1f} tons")
+    click.echo(f"      Internal alloc. : {metrics['total_internal_allocated']:>12,.1f} tons")
+    click.echo(f"      Outsourced      : {metrics['total_outsourced']:>12,.1f} tons")
+    click.echo(f"      Total unmet     : {metrics['total_unmet']:>12,.1f} tons")
+    click.echo(f"      Service level   : {metrics['service_level']:>11.1f}%")
+
+
+def _mode_results_for_summary(payload: dict[str, Any]):
+    if "basis_payloads" in payload:
+        return payload["basis_payloads"]["Planner"]["results"]
+    return payload["results"]
+
+
+def _mode_capacities_for_summary(payload: dict[str, Any]):
+    if "capacities_by_basis" in payload:
+        return payload["capacities_by_basis"]["Planner"]
+    return payload["capacities"]
+
+
+def _mode_unmet_capacities_for_summary(payload: dict[str, Any]):
+    if "baseline_capacities" in payload:
+        return payload["baseline_capacities"]
+    return payload["capacities"]
+
+
+def _mode_capacity_basis_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if "basis_payloads" in payload:
+        return {
+            "basis_results": {
+                basis: payload["basis_payloads"][basis]["results"]
+                for basis in ("Max", "Planner")
+            },
+            "basis_capacities": payload["capacities_by_basis"],
+            "unmet_capacities_by_basis": {
+                "Max": payload["baseline_capacities"],
+                "Planner": payload["baseline_capacities"],
+            },
+            "loads": payload["loads"],
+            "routings": payload["routings"],
+        }
+
+    return {
+        "basis_results": {
+            "Max": payload["results"],
+            "Planner": payload["results"],
+        },
+        "basis_capacities": {
+            "Max": payload["capacities"],
+            "Planner": payload["capacities"],
+        },
+        "unmet_capacities_by_basis": {
+            "Max": payload["capacities"],
+            "Planner": payload["capacities"],
+        },
+        "loads": payload["loads"],
+        "routings": payload["routings"],
+    }
+
+
+def _merge_capacity_records(
+    baseline_capacities,
+    comparison_capacities,
 ):
-    if direct_mode:
-        if selected_mode == "ModeA":
-            return load_direct_mode_a(
-                load_folder=config.input_load_folder,
-                master_folder=config.input_master_folder,
-                selected_scenario=selected_scenario,
-            )
-        return load_direct_mode_b(
-            load_folder=config.input_load_folder,
-            master_folder=config.input_master_folder,
-            selected_scenario=selected_scenario,
-        )
-
-    if not input_template:
-        raise ValueError("Input template is required when Direct Mode is disabled.")
-
-    return load_from_template_pq(
-        input_template,
-        include_routing=(selected_mode == "ModeB"),
-        selected_scenario=selected_scenario,
-    )
-
-
-def _load_mode_data_with_capacity_bases(
-    input_template: str | None,
-    direct_mode: bool,
-    selected_mode: str,
-    config,
-    selected_scenario: str | None,
-):
-    if direct_mode:
-        if selected_mode == "ModeA":
-            return load_direct_mode_a_with_capacity_bases(
-                load_folder=config.input_load_folder,
-                master_folder=config.input_master_folder,
-                selected_scenario=selected_scenario,
-            )
-        return load_direct_mode_b_with_capacity_bases(
-            load_folder=config.input_load_folder,
-            master_folder=config.input_master_folder,
-            selected_scenario=selected_scenario,
-        )
-
-    loads, capacities, routings = _load_mode_data(
-        input_template=input_template,
-        direct_mode=direct_mode,
-        selected_mode=selected_mode,
-        config=config,
-        selected_scenario=selected_scenario,
-    )
-    return loads, {"Max": capacities, "Planner": capacities}, routings
+    merged = {
+        (record.product, record.work_center): record
+        for record in baseline_capacities
+    }
+    for record in comparison_capacities:
+        merged[(record.product, record.work_center)] = record
+    return list(merged.values())
 
 
 def _resolve_modes(run_mode: str) -> list[str]:
@@ -577,7 +661,7 @@ def _normalize_cli_mode(value: str) -> str:
     return "ModeB"
 
 
-def _validate_direct_mode_setup(config, modes_to_run: list[str], is_frozen: bool = False) -> None:
+def _validate_input_setup(config, modes_to_run: list[str], is_frozen: bool = False) -> None:
     _validate_required_directory(
         "Project_Root_Folder",
         config.project_root_folder,
@@ -653,11 +737,7 @@ def _validate_master_file(master_folder: str, stem: str) -> None:
 
 
 def _validate_capacity_master(master_folder: str) -> None:
-    try:
-        _validate_master_file(master_folder, "master_routing")
-        return
-    except FileNotFoundError:
-        _validate_master_file(master_folder, "master_capacity")
+    _validate_master_file(master_folder, "master_capacity")
 
 
 def _validate_routing_file(master_folder: str, stems: list[str]) -> None:

@@ -30,6 +30,7 @@ Thumbs.db
 *.tmp
 *.temp
 *.bak
+*-win64*.zip
 
 # Excel / Office temporary files
 ~$*.xlsx
@@ -51,6 +52,8 @@ machine_fingerprint.json
 private_keys/
 license_admin/private_keys/
 license_admin/license_tools/__pycache__/
+customer_case_launcher_settings.json
+modeb_product_analysis_launcher_settings.json
 
 # Local document files; remove this rule if you want to publish Word docs
 *.docx

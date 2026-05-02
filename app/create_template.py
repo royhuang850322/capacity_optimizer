@@ -425,7 +425,6 @@ def _create_instructions(worksheet) -> None:
         ("Start_Year / Start_Month_Num: first planning bucket.", False),
         ("Horizon_Months: number of months to optimize.", False),
         ("Run_Mode: ModeA, ModeB, or Both.", False),
-        ("Direct_Mode: keep 'Yes' for the folder-based CSV workflow.", False),
         ("Verbose: prints solver detail in the command window.", False),
         ("Skip_Validation_Errors: only use 'Yes' when you intentionally want a forced run.", False),
         ("", False),
@@ -437,8 +436,8 @@ def _create_instructions(worksheet) -> None:
         ("", False),
         ("RESULT WORKBOOK CONTENT", True),
         ("Dashboard, Monthly_Trend, Bottleneck, WC_Heatmap, Product_Risk", False),
-        ("Allocation_Detail, Allocation_Summary, Outsource_Summary, Unmet_Summary, WC_Load_Pct", False),
-        ("Binary_Feasibility, Validation_Issues, Run_Info", False),
+        ("Allocation_Detail, Planner_Result_Summary", False),
+        ("Validation_Issues, Run_Info", False),
     ]
 
     for row_num, (text, bold) in enumerate(lines, start=1):
@@ -495,7 +494,6 @@ def _create_control_panel(worksheet, lists_ws, scenario_options: list[str]) -> N
         ("Start_Month", f"{now.year}-{now.month:02d}", "Optional legacy field; Python derives this from year/month first"),
         ("Horizon_Months", "60", "Number of monthly buckets"),
         ("Run_Mode", "Both", "ModeA, ModeB, or Both"),
-        ("Direct_Mode", "Yes", "Use direct folder-based CSV/Excel inputs"),
         ("Verbose", "No", "Print solver detail in the command window"),
         ("Skip_Validation_Errors", "No", "Run even when validation finds errors"),
         ("Run_Timestamp", "", "Filled by Python at runtime"),
@@ -602,7 +600,6 @@ def _create_control_panel(worksheet, lists_ws, scenario_options: list[str]) -> N
     worksheet[f"B{current_row + 15}"].alignment = Alignment(wrap_text=True)
 
     _add_list_validation(worksheet, f"B{value_rows['Run_Mode']}", lists_ws, "$A$2:$A$4")
-    _add_list_validation(worksheet, f"B{value_rows['Direct_Mode']}", lists_ws, "$B$2:$B$3")
     _add_list_validation(worksheet, f"B{value_rows['Verbose']}", lists_ws, "$B$2:$B$3")
     _add_list_validation(worksheet, f"B{value_rows['Skip_Validation_Errors']}", lists_ws, "$B$2:$B$3")
     _add_list_validation(worksheet, f"B{value_rows['Start_Month_Num']}", lists_ws, "$C$2:$C$13")

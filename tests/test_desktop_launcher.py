@@ -1,6 +1,9 @@
 import json
-import tempfile
+import os
+import shutil
 import unittest
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,9 +13,23 @@ from app.runtime_paths import resolve_runtime_paths
 from app.workspace_init import initialize_user_workspace
 
 
+TEST_TMP_ROOT = os.path.join(os.path.dirname(__file__), "_tmp")
+os.makedirs(TEST_TMP_ROOT, exist_ok=True)
+
+
+@contextmanager
+def workspace_tempdir():
+    tmpdir = os.path.join(TEST_TMP_ROOT, f"tmp_{uuid.uuid4().hex}")
+    os.mkdir(tmpdir)
+    try:
+        yield tmpdir
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 class DesktopLauncherTests(unittest.TestCase):
-    def test_initialize_user_workspace_creates_workbook_and_sample_data(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+    def test_initialize_user_workspace_creates_folders_and_sample_data(self):
+        with workspace_tempdir() as tmpdir:
             fake_install = Path(tmpdir) / "dist" / "CapacityOptimizer"
             bundled_data = fake_install / "resources" / "Data_Input"
             bundled_docs = fake_install / "resources" / "docs"
@@ -41,9 +58,8 @@ class DesktopLauncherTests(unittest.TestCase):
             ), patch.dict("os.environ", {"LOCALAPPDATA": str(local_appdata)}, clear=False):
                 result = initialize_user_workspace(resolve_runtime_paths())
 
-            self.assertTrue(result.workbook_created)
+            self.assertFalse(result.workbook_created)
             self.assertTrue(result.sample_data_copied)
-            self.assertTrue(result.paths.control_workbook_path.exists())
             self.assertTrue((result.paths.workspace_input_dir / "planner1_load.csv").exists())
             self.assertTrue((result.paths.workspace_input_dir / "master_capacity.csv").exists())
             self.assertTrue((result.paths.workspace_docs_dir / "CUSTOMER_LICENSE_QUICKSTART_CN.md").exists())
@@ -53,11 +69,10 @@ class DesktopLauncherTests(unittest.TestCase):
             self.assertEqual(manifest["install_dir"], str(result.paths.app_install_dir))
 
     def test_initialize_user_workspace_does_not_overwrite_existing_user_files(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with workspace_tempdir() as tmpdir:
             with patch.dict("os.environ", {"CAPACITY_OPTIMIZER_WORKSPACE": tmpdir}, clear=False):
                 paths = resolve_runtime_paths()
                 initialize_user_workspace(paths)
-                paths.control_workbook_path.write_text("user workbook", encoding="utf-8")
                 user_data = paths.workspace_input_dir / "planner1_load.csv"
                 user_data.write_text("custom planner file", encoding="utf-8")
                 customer_doc = paths.workspace_docs_dir / "CUSTOMER_LICENSE_QUICKSTART_CN.md"
@@ -67,12 +82,11 @@ class DesktopLauncherTests(unittest.TestCase):
 
             self.assertFalse(result.workbook_created)
             self.assertFalse(result.sample_data_copied)
-            self.assertEqual(paths.control_workbook_path.read_text(encoding="utf-8"), "user workbook")
             self.assertEqual(user_data.read_text(encoding="utf-8"), "custom planner file")
             self.assertEqual(customer_doc.read_text(encoding="utf-8"), "custom doc")
 
     def test_run_optimizer_from_launcher_writes_log_and_reports_success(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with workspace_tempdir() as tmpdir:
             with patch.dict("os.environ", {"CAPACITY_OPTIMIZER_WORKSPACE": tmpdir}, clear=False):
                 paths = resolve_runtime_paths()
                 initialize_user_workspace(paths)
@@ -93,7 +107,7 @@ class DesktopLauncherTests(unittest.TestCase):
             self.assertIn("Running with launcher settings", log_text)
 
     def test_run_optimizer_from_launcher_initializes_workspace_if_missing(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with workspace_tempdir() as tmpdir:
             with patch.dict("os.environ", {"CAPACITY_OPTIMIZER_WORKSPACE": tmpdir}, clear=False):
                 paths = resolve_runtime_paths()
                 runtime_config = self._build_runtime_config(paths)
@@ -110,7 +124,7 @@ class DesktopLauncherTests(unittest.TestCase):
             self.assertTrue(paths.logs_dir.exists())
 
     def test_generate_machine_fingerprint_request_writes_workspace_file(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with workspace_tempdir() as tmpdir:
             with patch.dict("os.environ", {"CAPACITY_OPTIMIZER_WORKSPACE": tmpdir}, clear=False):
                 paths = resolve_runtime_paths()
                 initialize_user_workspace(paths)
@@ -128,7 +142,7 @@ class DesktopLauncherTests(unittest.TestCase):
             self.assertIn("machine_fingerprint_TEST-PC_", request_path.name)
 
     def test_run_optimizer_from_launcher_supports_legacy_cli_runner(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with workspace_tempdir() as tmpdir:
             with patch.dict("os.environ", {"CAPACITY_OPTIMIZER_WORKSPACE": tmpdir}, clear=False):
                 paths = resolve_runtime_paths()
                 initialize_user_workspace(paths)
@@ -155,7 +169,6 @@ class DesktopLauncherTests(unittest.TestCase):
             start_month="2026-01",
             horizon_months=1,
             run_mode="ModeA",
-            direct_mode=True,
             verbose=False,
             skip_validation_errors=False,
         )

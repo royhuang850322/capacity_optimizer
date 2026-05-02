@@ -288,15 +288,12 @@ output
 - `ModeB`：考虑 routing、内部分配、外包和 unmet
 - `Both`：同时跑 `ModeA` 和 `ModeB`，并生成比较报告
 
-##### `Direct_Mode`
+##### 输入数据来源
 
-建议保持：
+工具固定从以下两个目录直接读取数据：
 
-```text
-Yes
-```
-
-表示直接从文件夹读取 planner / master 数据。
+- `Input_Load_Folder`：planner load 文件
+- `Input_Master_Folder`：master data 文件
 
 ##### `Verbose`
 
@@ -437,17 +434,17 @@ Yes
 
 这意味着：
 
-- `Utilization_Target` 仍然用于优化求解时限制可用产能
-- 但报表中的 `%` 不再按乘完 `Utilization_Target` 后的有效产能显示
+- `Utilization_Target` 字段现在仅保留在输入模板中，用于兼容旧文件
+- 优化求解与报表计算均统一按 `100%` 的名义产能执行，不再乘以 `Utilization_Target`
 
 例如：
 
 - 如果某条资源的名义月产能是 `100`
-- `Utilization_Target = 0.88`
-- 优化可用产能仍然是 `88`
-- 但如果实际分配量为 `88`
-- 报表现在显示为 `88%`
-- 不再显示为 `100%`
+- 即使 `Utilization_Target = 0.88`
+- 优化可用产能仍然按 `100` 计算
+- 如果实际分配量为 `88`
+- 报表显示为 `88%`
+- 如果实际分配量为 `100`，报表显示为 `100%`
 
 当前影响到的主要输出包括：
 

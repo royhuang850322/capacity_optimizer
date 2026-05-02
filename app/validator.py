@@ -7,8 +7,9 @@ ModeA:
 
 ModeB:
   - includes all ModeA checks
-  - validates Alternative_routing data
-  - checks routing coverage against capacity
+  - requires product-level routing data
+  - enforces 1 product -> 1 family
+  - allows routing-only resources for Stage 2
 """
 from collections import defaultdict
 from typing import Dict, List, Set, Tuple
@@ -21,12 +22,14 @@ def validate(
     capacities: List[CapacityRecord],
     routings: List[RoutingRecord],
     mode: str = "ModeB",
+    routing_capacities: List[CapacityRecord] | None = None,
 ) -> List[ValidationIssue]:
     issues: List[ValidationIssue] = []
     require_routing = mode.strip().lower() == "modeb"
 
     issues.extend(_check_load_records(loads))
     issues.extend(_check_capacity_records(capacities))
+    issues.extend(_check_product_family_consistency(loads, routings))
 
     if require_routing:
         if not routings:
@@ -43,6 +46,7 @@ def validate(
         capacities=capacities,
         routings=routings,
         require_routing=require_routing,
+        routing_capacities=routing_capacities,
     ))
     return issues
 
@@ -61,39 +65,6 @@ def _split_merged_text(value: str | None) -> list[str]:
     if not text:
         return []
     return [part.strip() for part in text.split("|") if part.strip()]
-
-
-def _routing_match_summary(
-    record: LoadRecord,
-    product_wcs: Set[str],
-    family_wcs: Set[str],
-    toller_eligible: bool,
-) -> str:
-    parts: List[str] = []
-
-    if product_wcs:
-        parts.append(
-            f"matched Product='{record.product}' -> {sorted(product_wcs)}"
-        )
-
-    if family_wcs:
-        family = record.product_family or "<blank>"
-        parts.append(
-            f"matched ProductFamily='{family}' -> {sorted(family_wcs)}"
-        )
-
-    if toller_eligible:
-        parts.append("matched product-level Toller eligibility")
-
-    if parts:
-        return "; ".join(parts)
-
-    if record.product_family:
-        return (
-            f"checked Product='{record.product}' and "
-            f"ProductFamily='{record.product_family}'"
-        )
-    return f"checked Product='{record.product}'"
 
 
 def _check_load_records(loads: List[LoadRecord]) -> List[ValidationIssue]:
@@ -190,14 +161,34 @@ def _check_capacity_records(capacities: List[CapacityRecord]) -> List[Validation
                 detail=f"Annual_Capacity_Tons <= 0 for {record.product} / {record.work_center}.",
             ))
 
-        if not (0.0 < record.utilization_target <= 1.0):
+    return issues
+
+
+def _check_product_family_consistency(
+    loads: List[LoadRecord],
+    routings: List[RoutingRecord],
+) -> List[ValidationIssue]:
+    issues: List[ValidationIssue] = []
+    family_values_by_product: Dict[str, Set[str]] = defaultdict(set)
+
+    for record in loads:
+        product = str(record.product or "").strip()
+        family = str(record.product_family or "").strip()
+        if product and family:
+            family_values_by_product[product].add(family)
+
+    for routing in routings:
+        product = str(routing.product or "").strip()
+        family = str(routing.product_family or "").strip()
+        if product and family:
+            family_values_by_product[product].add(family)
+
+    for product, families in sorted(family_values_by_product.items()):
+        if len(families) > 1:
             issues.append(ValidationIssue(
                 severity="ERROR",
-                check="CapacityUtilRange",
-                detail=(
-                    f"Utilization_Target {record.utilization_target} is outside (0,1] "
-                    f"for {record.product} / {record.work_center}."
-                ),
+                check="ProductFamilyConflict",
+                detail=f"Product '{product}' maps to multiple ProductFamily values: {sorted(families)}.",
             ))
 
     return issues
@@ -207,11 +198,14 @@ def _check_routing_records(routings: List[RoutingRecord]) -> List[ValidationIssu
     issues: List[ValidationIssue] = []
 
     for record in routings:
-        if record.product is None and record.product_family is None:
+        if not record.product:
             issues.append(ValidationIssue(
                 severity="ERROR",
-                check="RoutingNoKey",
-                detail=f"Routing row has neither Product nor ProductFamily for WC={record.work_center}.",
+                check="RoutingProductRequired",
+                detail=(
+                    f"Routing row for WC={record.work_center} must provide Product. "
+                    "ProductFamily-only routing is no longer used by ModeB."
+                ),
             ))
         if record.priority < 1:
             issues.append(ValidationIssue(
@@ -231,6 +225,7 @@ def _check_cross_coverage(
     capacities: List[CapacityRecord],
     routings: List[RoutingRecord],
     require_routing: bool,
+    routing_capacities: List[CapacityRecord] | None,
 ) -> List[ValidationIssue]:
     issues: List[ValidationIssue] = []
 
@@ -252,79 +247,57 @@ def _check_cross_coverage(
         issues.extend(_check_planner_resource_capacity_coverage(loads, cap_keys))
         return issues
 
-    cap_wcs_by_product: Dict[str, Set[str]] = {}
-    for record in capacities:
-        cap_wcs_by_product.setdefault(record.product, set()).add(record.work_center)
+    routing_capacities = routing_capacities or capacities
+    routing_cap_keys: Set[Tuple[str, str]] = {
+        (record.product, record.work_center)
+        for record in routing_capacities
+    }
 
-    routing_by_product_all: Dict[str, Set[str]] = {}
-    routing_by_family_all: Dict[str, Set[str]] = {}
-    routing_by_product_internal: Dict[str, Set[str]] = {}
-    routing_by_family_internal: Dict[str, Set[str]] = {}
+    product_level_rows: Dict[str, List[RoutingRecord]] = defaultdict(list)
     toller_products: Set[str] = set()
-    for routing in routings:
-        if routing.product:
-            routing_by_product_all.setdefault(routing.product, set()).add(routing.work_center)
-            if routing.eligible_flag and routing.route_type.strip().lower() == "toller":
-                toller_products.add(routing.product)
-            elif routing.eligible_flag:
-                routing_by_product_internal.setdefault(routing.product, set()).add(routing.work_center)
-        elif routing.product_family:
-            routing_by_family_all.setdefault(routing.product_family, set()).add(routing.work_center)
-            if routing.eligible_flag and routing.route_type.strip().lower() != "toller":
-                routing_by_family_internal.setdefault(routing.product_family, set()).add(routing.work_center)
+    internal_route_wcs: Dict[str, Set[str]] = defaultdict(set)
 
-    for product in load_products:
-        if product not in cap_products and product not in toller_products:
+    for routing in routings:
+        if not routing.product:
+            continue
+        product_level_rows[routing.product].append(routing)
+        if not routing.eligible_flag:
+            continue
+        if routing.route_type.strip().lower() == "toller":
+            toller_products.add(routing.product)
+        else:
+            internal_route_wcs[routing.product].add(routing.work_center)
+
+    issues.extend(_check_planner_resource_capacity_coverage(loads, cap_keys))
+    issues.extend(_check_mode_b_product_toller_routes(load_products, routings))
+
+    for product in sorted(load_products):
+        has_stage1_capacity = product in cap_products
+        has_stage2_internal = bool(internal_route_wcs.get(product))
+        has_toller = product in toller_products
+
+        if not has_stage1_capacity and not has_stage2_internal and not has_toller:
             issues.append(ValidationIssue(
                 severity="ERROR",
                 check="NoCoverageCapacity",
-                detail=f"Product '{product}' in load has no capacity record.",
-            ))
-
-    issues.extend(_check_planner_resource_capacity_coverage(loads, cap_keys))
-    issues.extend(_check_mode_b_product_primary_routes(load_products, routings))
-    issues.extend(_check_mode_b_product_toller_routes(load_products, routings))
-
-    for record in loads:
-        ref = _row_ref(record)
-        product_wcs = routing_by_product_internal.get(record.product, set())
-        family_wcs = routing_by_family_internal.get(record.product_family, set())
-        toller_eligible = record.product in toller_products
-        matched_any = bool(
-            routing_by_product_all.get(record.product, set()) or
-            routing_by_family_all.get(record.product_family, set())
-        )
-        eligible_wcs = product_wcs | family_wcs
-        routing_summary = _routing_match_summary(record, product_wcs, family_wcs, toller_eligible)
-        if not matched_any:
-            # No routing row applies to this product/family.
-            # ModeB falls back to capacity-only routing in the optimizer.
-            continue
-
-        if not eligible_wcs and not toller_eligible:
-            issues.append(ValidationIssue(
-                severity="ERROR",
-                check="NoCoverageRouting",
                 detail=(
-                    f"{ref}Product '{record.product}' has no eligible routing; "
-                    f"{routing_summary}."
+                    f"Product '{product}' has no Stage 1 capacity, no eligible internal routing, "
+                    "and no eligible Toller route."
                 ),
             ))
-            continue
 
-        wcs_with_capacity = {
-            wc for wc in eligible_wcs
-            if (record.product, wc) in cap_keys
-        }
-        if not wcs_with_capacity and eligible_wcs and not toller_eligible:
-            available_cap_wcs = sorted(cap_wcs_by_product.get(record.product, set()))
+    for product, route_wcs in sorted(internal_route_wcs.items()):
+        missing_capacity = sorted(
+            wc for wc in route_wcs
+            if (product, wc) not in routing_cap_keys
+        )
+        if missing_capacity:
             issues.append(ValidationIssue(
                 severity="ERROR",
-                check="RoutingCapacityMismatch",
+                check="RoutingCapacityMissing",
                 detail=(
-                    f"{ref}Product '{record.product}' has no matching capacity record; "
-                    f"{routing_summary}; combined eligible routes={sorted(eligible_wcs)}; "
-                    f"available capacity routes={available_cap_wcs}."
+                    f"Product '{product}' has eligible product-level routing to resources without capacity rows: "
+                    f"{missing_capacity}."
                 ),
             ))
 
@@ -353,42 +326,6 @@ def _check_planner_resource_capacity_coverage(
                         "but no matching master_capacity row exists."
                     ),
                 ))
-    return issues
-
-
-def _check_mode_b_product_primary_routes(
-    load_products: Set[str],
-    routings: List[RoutingRecord],
-) -> List[ValidationIssue]:
-    issues: List[ValidationIssue] = []
-    product_level_rows: Dict[str, List[RoutingRecord]] = defaultdict(list)
-    for routing in routings:
-        if routing.product:
-            product_level_rows[routing.product].append(routing)
-
-    for product in sorted(load_products):
-        rows = product_level_rows.get(product, [])
-        if not rows:
-            continue
-
-        primary_wcs = {
-            row.work_center
-            for row in rows
-            if row.eligible_flag and row.route_type.strip().lower() == "primary"
-        }
-        if len(primary_wcs) == 0:
-            issues.append(ValidationIssue(
-                severity="ERROR",
-                check="RoutingPrimaryMissing",
-                detail=f"Product '{product}' has product-level routing rows but no eligible Primary route.",
-            ))
-        elif len(primary_wcs) > 1:
-            issues.append(ValidationIssue(
-                severity="ERROR",
-                check="RoutingPrimaryDuplicate",
-                detail=f"Product '{product}' has multiple eligible Primary routes: {sorted(primary_wcs)}.",
-            ))
-
     return issues
 
 

@@ -11,8 +11,6 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-
-from app.create_template import write_control_workbook
 from app.runtime_paths import RuntimePaths, ensure_workspace_dirs, resolve_runtime_paths
 
 
@@ -35,11 +33,10 @@ def initialize_user_workspace(paths: RuntimePaths | None = None) -> WorkspaceIni
     runtime_paths = ensure_workspace_dirs(paths or resolve_runtime_paths())
     sample_data_copied = _ensure_workspace_sample_data(runtime_paths)
     _ensure_workspace_docs(runtime_paths)
-    workbook_created = _ensure_control_workbook(runtime_paths)
     _write_workspace_manifest(runtime_paths)
     return WorkspaceInitializationResult(
         paths=runtime_paths,
-        workbook_created=workbook_created,
+        workbook_created=False,
         sample_data_copied=sample_data_copied,
     )
 
@@ -53,15 +50,6 @@ def _ensure_workspace_sample_data(paths: RuntimePaths) -> bool:
         return False
     shutil.copytree(paths.sample_data_dir, paths.workspace_input_dir, dirs_exist_ok=True)
     return True
-
-
-def _ensure_control_workbook(paths: RuntimePaths) -> bool:
-    if paths.control_workbook_path.exists():
-        return False
-    load_dir = paths.workspace_input_dir if paths.workspace_input_dir.exists() else paths.sample_data_dir
-    write_control_workbook(str(paths.control_workbook_path), load_dir=str(load_dir))
-    return True
-
 
 def _ensure_workspace_docs(paths: RuntimePaths) -> bool:
     if not paths.bundled_docs_dir.exists():
@@ -87,7 +75,6 @@ def _write_workspace_manifest(paths: RuntimePaths) -> None:
         "last_checked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "install_dir": str(paths.app_install_dir),
         "workspace_dir": str(paths.user_workspace_dir),
-        "control_workbook_path": str(paths.control_workbook_path),
         "outputs_dir": str(paths.outputs_dir),
         "logs_dir": str(paths.logs_dir),
         "license_dir": str(paths.license_dir),

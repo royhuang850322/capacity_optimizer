@@ -186,7 +186,6 @@ Tooling Control Panel\Capacity_Optimizer_Control.xlsx
 - `Start_Month_Num`
 - `Horizon_Months`
 - `Run_Mode`
-- `Direct_Mode`
 - `Verbose`
 - `Skip_Validation_Errors`
 

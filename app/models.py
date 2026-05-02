@@ -18,9 +18,9 @@ class Config:
     run_timestamp: Optional[str] = None
     notes: Optional[str] = None
     run_mode: str = "ModeB"
-    direct_mode: bool = True
     verbose: bool = False
     skip_validation_errors: bool = False
+    language: str = "en"
     project_root_folder: str = ""
     license_status: str = ""
     license_id: Optional[str] = None
@@ -57,7 +57,7 @@ class CapacityRecord:
     product: str
     work_center: str
     annual_capacity_tons: float
-    utilization_target: float   # decimal, e.g. 0.88 for 88%
+    utilization_target: float   # compatibility field; capacity calculations now always use 100%
     effective_from: Optional[str] = None
     effective_to: Optional[str] = None
 
@@ -67,7 +67,7 @@ class CapacityRecord:
 
     @property
     def effective_monthly_capacity_tons(self) -> float:
-        return self.monthly_capacity_tons * self.utilization_target
+        return self.monthly_capacity_tons
 
 
 @dataclass
@@ -102,6 +102,9 @@ class AllocationResult:
     unmet_tons: float
     capacity_share_pct: float   # fraction of that WC's monthly capacity consumed
     planner_name: str = ""
+    allocation_source: str = ""
+    residual_after_capacity_tons: float = 0.0
+    residual_after_routing_tons: float = 0.0
 
 
 @dataclass

@@ -19,7 +19,8 @@ from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.chart.label import DataLabelList
 from openpyxl.formatting.rule import ColorScaleRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
+from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from app.load_pressure import (
@@ -27,6 +28,7 @@ from app.load_pressure import (
     build_dashboard_fact_frame,
     build_pressure_load_frame,
     build_pressure_tons_frame,
+    build_unmet_attribution_detail_frame,
     build_raw_capacity_map,
     compute_display_capacity_share_pct,
     _summarize_heatmap_months_to_years,
@@ -41,6 +43,14 @@ from app.models import (
 )
 from app.result_analysis import (
     build_result_analysis,
+)
+from app.i18n import (
+    localize_column_name,
+    localize_mode,
+    localize_sheet_name,
+    localize_value,
+    normalize_language,
+    report_text,
 )
 
 
@@ -73,6 +83,36 @@ TONS_FMT = "#,##0.0"
 INT_FMT = "#,##0"
 FILTER_SLOTS = 8
 DASHBOARD_LAST_COL = 20
+_ACTIVE_REPORT_LANGUAGE = "en"
+
+
+def _set_report_language(language: str | None) -> None:
+    global _ACTIVE_REPORT_LANGUAGE
+    _ACTIVE_REPORT_LANGUAGE = normalize_language(language)
+
+
+def _lang() -> str:
+    return _ACTIVE_REPORT_LANGUAGE
+
+
+def _is_zh() -> bool:
+    return _lang() == "zh"
+
+
+def _rt(key: str, **kwargs: Any) -> str:
+    return report_text(_lang(), key, **kwargs)
+
+
+def _sheet_title(name: str) -> str:
+    return localize_sheet_name(_lang(), name)
+
+
+def _text(en: str, zh: str) -> str:
+    return zh if _is_zh() else en
+
+
+def _is_mode_b_report(mode: str) -> bool:
+    return str(mode or "").strip().lower() == "modeb"
 
 
 def _metric_card_palette(metric_name: str) -> tuple[PatternFill, PatternFill]:
@@ -167,6 +207,9 @@ def _plannerize_results(
                 unmet_tons=result.unmet_tons,
                 capacity_share_pct=result.capacity_share_pct,
                 planner_name=result.planner_name,
+                allocation_source=result.allocation_source,
+                residual_after_capacity_tons=result.residual_after_capacity_tons,
+                residual_after_routing_tons=result.residual_after_routing_tons,
             )
             for result in results
         ]
@@ -192,6 +235,9 @@ def _plannerize_results(
                     unmet_tons=result.unmet_tons,
                     capacity_share_pct=result.capacity_share_pct,
                     planner_name=result.planner_name,
+                    allocation_source=result.allocation_source,
+                    residual_after_capacity_tons=result.residual_after_capacity_tons,
+                    residual_after_routing_tons=result.residual_after_routing_tons,
                 )
             )
             continue
@@ -201,6 +247,14 @@ def _plannerize_results(
         outsourced_split = _split_value_by_planner(result.outsourced_tons, planner_weights)
         unmet_split = _split_value_by_planner(result.unmet_tons, planner_weights)
         cap_share_split = _split_value_by_planner(result.capacity_share_pct, planner_weights)
+        residual_after_capacity_split = _split_value_by_planner(
+            result.residual_after_capacity_tons,
+            planner_weights,
+        )
+        residual_after_routing_split = _split_value_by_planner(
+            result.residual_after_routing_tons,
+            planner_weights,
+        )
 
         for planner_name, _weight in planner_weights:
             planner_allocated = round(allocated_split.get(planner_name, 0.0), 4)
@@ -230,6 +284,9 @@ def _plannerize_results(
                     unmet_tons=planner_unmet,
                     capacity_share_pct=round(cap_share_split.get(planner_name, 0.0), 4),
                     planner_name=planner_name,
+                    allocation_source=result.allocation_source,
+                    residual_after_capacity_tons=round(residual_after_capacity_split.get(planner_name, 0.0), 4),
+                    residual_after_routing_tons=round(residual_after_routing_split.get(planner_name, 0.0), 4),
                 )
             )
 
@@ -248,6 +305,7 @@ def write_results(
     toller_products: Optional[set] = None,
     metrics_by_mode: Optional[dict[str, dict[str, Any]]] = None,
     dashboard_facts_by_mode: Optional[dict[str, pd.DataFrame]] = None,
+    unmet_capacities: Optional[List[CapacityRecord]] = None,
 ) -> str:
     """
     Write a complete Excel report workbook.
@@ -257,6 +315,7 @@ def write_results(
     - raw output sheets for audit/detail
     """
     os.makedirs(config.output_folder, exist_ok=True)
+    _set_report_language(getattr(config, "language", "en"))
     out_path = build_output_path(config, mode)
 
     wb = Workbook()
@@ -272,6 +331,7 @@ def write_results(
         months,
         mode,
         dashboard_fact=(dashboard_facts_by_mode or {}).get(mode),
+        unmet_capacities=unmet_capacities,
     )
     df_detail = artifact["df_detail"]
     wc_load_df = artifact["wc_load_df"]
@@ -297,7 +357,19 @@ def write_results(
     _write_product_risk_analysis(wb, analysis)
 
     _write_detail(wb, df_detail)
+    _write_unmet_attribution_detail(
+        wb,
+        build_unmet_attribution_detail_frame(
+            mode=mode,
+            results=results,
+            loads=loads or [],
+            capacities=capacities or [],
+            routings=routings or [],
+            unmet_capacities=unmet_capacities,
+        ),
+    )
     _write_planner_summary(wb, analysis)
+    _write_validation(wb, issues)
     _write_run_info(wb, run_info_df)
 
     wb.save(out_path)
@@ -314,6 +386,7 @@ def write_mode_comparison_summary(
     mode_routings: Optional[dict[str, List[RoutingRecord]]] = None,
     dashboard_facts_by_mode: Optional[dict[str, pd.DataFrame]] = None,
     capacity_basis_payloads_by_mode: Optional[dict[str, dict[str, Any]]] = None,
+    mode_unmet_capacities: Optional[dict[str, List[CapacityRecord]]] = None,
 ) -> str:
     """
     Write a standalone comparison workbook when both ModeA and ModeB are run.
@@ -323,6 +396,7 @@ def write_mode_comparison_summary(
         raise ValueError("Comparison workbook requires both ModeA and ModeB results.")
 
     os.makedirs(config.output_folder, exist_ok=True)
+    _set_report_language(getattr(config, "language", "en"))
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = os.path.join(config.output_folder, f"Summary of Mode A and Mode B_{ts}.xlsx")
 
@@ -336,6 +410,7 @@ def write_mode_comparison_summary(
             months,
             mode,
             dashboard_fact=(dashboard_facts_by_mode or {}).get(mode),
+            unmet_capacities=mode_unmet_capacities.get(mode) if mode_unmet_capacities else None,
         )
         for mode in ("ModeA", "ModeB")
     }
@@ -352,6 +427,26 @@ def write_mode_comparison_summary(
     _write_bottleneck_comparison(wb, artifacts)
     _write_heatmap_comparison(wb, artifacts)
     _write_product_risk_comparison(wb, artifacts)
+    _write_unmet_attribution_detail(
+        wb,
+        _concat_tagged_frames(
+            [
+                (
+                    "Mode",
+                    mode,
+                    build_unmet_attribution_detail_frame(
+                        mode=mode,
+                        results=mode_results[mode],
+                        loads=(mode_loads.get(mode) if mode_loads else []) or [],
+                        capacities=(mode_capacities.get(mode) if mode_capacities else []) or [],
+                        routings=(mode_routings.get(mode) if mode_routings else []) or [],
+                        unmet_capacities=mode_unmet_capacities.get(mode) if mode_unmet_capacities else None,
+                    ),
+                )
+                for mode in ("ModeA", "ModeB")
+            ]
+        ),
+    )
     if capacity_basis_payloads_by_mode:
         _write_summary_capacity_basis_pages(
             wb,
@@ -375,8 +470,10 @@ def write_capacity_basis_results(
     months: List[str],
     mode: str = "ModeA",
     toller_products_by_basis: Optional[dict[str, set[str]]] = None,
+    unmet_capacities_by_basis: Optional[dict[str, List[CapacityRecord]]] = None,
 ) -> str:
     os.makedirs(config.output_folder, exist_ok=True)
+    _set_report_language(getattr(config, "language", "en"))
     out_path = build_output_path(config, mode)
 
     wb = Workbook()
@@ -393,6 +490,7 @@ def write_capacity_basis_results(
             config,
             months,
             basis,
+            unmet_capacities=(unmet_capacities_by_basis or {}).get(basis),
         )
         for basis in basis_labels
     }
@@ -409,6 +507,7 @@ def write_capacity_basis_results(
         loads=loads or [],
         routings=routings or [],
         months=months,
+        unmet_capacities_by_basis=unmet_capacities_by_basis,
     )
     _write_capacity_basis_product_risk(wb, mode, artifacts)
     _write_capacity_basis_planner_summary(wb, mode, artifacts)
@@ -417,6 +516,27 @@ def write_capacity_basis_results(
     run_info_df = _concat_basis_run_info_frames(artifacts)
 
     _write_detail(wb, detail_df)
+    _write_unmet_attribution_detail(
+        wb,
+        _concat_tagged_frames(
+            [
+                (
+                    "Capacity_Basis",
+                    basis,
+                    build_unmet_attribution_detail_frame(
+                        mode=mode,
+                        results=basis_results[basis],
+                        loads=loads or [],
+                        capacities=basis_capacities[basis],
+                        routings=routings or [],
+                        unmet_capacities=(unmet_capacities_by_basis or {}).get(basis),
+                    ),
+                )
+                for basis in basis_labels
+            ]
+        ),
+    )
+    _write_validation(wb, combined_issues)
     _write_run_info(wb, run_info_df)
 
     wb.save(out_path)
@@ -443,6 +563,9 @@ def _results_to_df(
         "Outsourced_Tons",
         "Unmet_Tons",
         "CapacityShare_Pct",
+        "Allocation_Source",
+        "Residual_After_Capacity_Tons",
+        "Residual_After_Routing_Tons",
     ]
     for result in results:
         rows.append(
@@ -466,9 +589,26 @@ def _results_to_df(
                     allocated_tons=result.allocated_tons,
                     raw_capacity_map=raw_capacity_map,
                 ) / 100.0,
+                "Allocation_Source": result.allocation_source,
+                "Residual_After_Capacity_Tons": result.residual_after_capacity_tons,
+                "Residual_After_Routing_Tons": result.residual_after_routing_tons,
             }
         )
-    return pd.DataFrame(rows, columns=columns)
+    df = pd.DataFrame(rows, columns=columns)
+    if df.empty:
+        return df
+
+    has_stage_trace = df["Allocation_Source"].astype(str).str.strip().ne("").any()
+    if not has_stage_trace:
+        df = df.drop(
+            columns=[
+                "Allocation_Source",
+                "Residual_After_Capacity_Tons",
+                "Residual_After_Routing_Tons",
+            ],
+            errors="ignore",
+        )
+    return df
 
 
 def _build_mode_artifact(
@@ -480,6 +620,7 @@ def _build_mode_artifact(
     months: List[str],
     mode: str,
     dashboard_fact: Optional[pd.DataFrame] = None,
+    unmet_capacities: Optional[List[CapacityRecord]] = None,
 ) -> dict[str, Any]:
     capacities = capacities or []
     routings = routings or []
@@ -493,6 +634,7 @@ def _build_mode_artifact(
         capacities=capacities,
         routings=routings,
         months=months,
+        unmet_capacities=unmet_capacities,
     )
     wc_tons_df = build_pressure_tons_frame(
         mode=mode,
@@ -501,6 +643,7 @@ def _build_mode_artifact(
         capacities=capacities,
         routings=routings,
         months=months,
+        unmet_capacities=unmet_capacities,
     )
     run_info_df = _build_run_info_df(config, mode)
     analysis = build_result_analysis(df_detail, wc_load_df, run_info_df)
@@ -511,6 +654,7 @@ def _build_mode_artifact(
         loads=loads or [],
         capacities=capacities,
         routings=routings,
+        unmet_capacities=unmet_capacities,
     )
     return {
         "df_detail": df_detail,
@@ -553,7 +697,6 @@ def _build_run_info_df(config: Config, mode: str) -> pd.DataFrame:
         ("Output_FileName", config.output_file_name),
         ("Run_Timestamp", config.run_timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
         ("Run_Mode", getattr(config, "run_mode", mode)),
-        ("Direct_Mode", "Yes" if getattr(config, "direct_mode", True) else "No"),
         ("Verbose", "Yes" if getattr(config, "verbose", False) else "No"),
         (
             "Skip_Validation_Errors",
@@ -600,6 +743,7 @@ def _build_preview_metrics(
 
 def _enable_formula_recalc(wb: Workbook) -> None:
     try:
+        wb.calculation.calcMode = "auto"
         wb.calculation.fullCalcOnLoad = True
         wb.calculation.forceFullCalc = True
     except Exception:
@@ -684,6 +828,7 @@ def _write_dashboard_helper_table(
         start_row=start_row,
         start_col=1,
         num_formats=num_formats or {},
+        add_excel_table=False,
     )
     return {
         "sheet_name": ws.title,
@@ -726,6 +871,7 @@ def _write_dashboard_fact_sheet(
         fact_df,
         start_row=start_row,
         start_col=start_col,
+        localize_cells=False,
         num_formats={
             "Demand_Tons": TONS_FMT,
             "Internal_Tons": TONS_FMT,
@@ -733,6 +879,7 @@ def _write_dashboard_fact_sheet(
             "Unmet_Tons": TONS_FMT,
             "Supplied_Tons": TONS_FMT,
         },
+        add_excel_table=False,
     )
 
     workcenters = sorted(
@@ -763,7 +910,7 @@ def _write_dashboard_fact_sheet(
         },
         key=str.casefold,
     )
-    ws.cell(start_row + 1, year_list_col).value = "All"
+    ws.cell(start_row + 1, year_list_col).value = _rt("selection_mode_all")
     for offset, year in enumerate(years, start=start_row + 2):
         ws.cell(offset, year_list_col).value = year
     year_list_end_row = max(start_row + 1, start_row + len(years) + 1)
@@ -779,7 +926,7 @@ def _write_dashboard_fact_sheet(
         "year_list_start_row": start_row + 1,
         "year_list_end_row": year_list_end_row,
         "workcenters": workcenters,
-        "years": ["All", *years],
+        "years": [_rt("selection_mode_all"), *years],
     }
 
 
@@ -803,18 +950,19 @@ def _dashboard_filtered_sum_formula(
     selected_range_ref: str,
     selected_year_ref: str | None = None,
 ) -> str:
+    all_label = _rt("selection_mode_all")
     value_range = _sheet_range_ref(meta, metric_name)
     mode_range = _sheet_range_ref(meta, "Mode")
     workcenter_range = _sheet_range_ref(meta, "WorkCenter")
     year_range = _sheet_range_ref(meta, "Year") if "Year" in meta["col_index"] else None
     if year_range and selected_year_ref:
         all_formula = (
-            f'IF({selected_year_ref}="All",'
+            f'IF({selected_year_ref}="{all_label}",'
             f'SUMIFS({value_range},{mode_range},"{mode_name}"),'
             f'SUMIFS({value_range},{mode_range},"{mode_name}",{year_range},{selected_year_ref}))'
         )
         filtered_formula = (
-            f'IF({selected_year_ref}="All",'
+            f'IF({selected_year_ref}="{all_label}",'
             f'SUMPRODUCT(({mode_range}="{mode_name}")*({value_range})*(COUNTIF({selected_range_ref},{workcenter_range})>0)),'
             f'SUMPRODUCT(({mode_range}="{mode_name}")*({year_range}={selected_year_ref})*({value_range})*'
             f'(COUNTIF({selected_range_ref},{workcenter_range})>0)))'
@@ -825,7 +973,7 @@ def _dashboard_filtered_sum_formula(
             f'SUMPRODUCT(({mode_range}="{mode_name}")*({value_range})*'
             f'(COUNTIF({selected_range_ref},{workcenter_range})>0))'
         )
-    return f'=IF({selection_mode_ref}="All",{all_formula},{filtered_formula})'
+    return f'=IF({selection_mode_ref}="{all_label}",{all_formula},{filtered_formula})'
 
 
 def _dashboard_selected_workcenter_count_formula(
@@ -833,11 +981,12 @@ def _dashboard_selected_workcenter_count_formula(
     selection_mode_ref: str,
     selected_range_ref: str,
 ) -> str:
+    all_label = _rt("selection_mode_all")
     list_col_letter = get_column_letter(meta["list_col"])
     list_range = (
         f"{_excel_sheet_ref(meta['sheet_name'])}!${list_col_letter}${meta['list_start_row']}:${list_col_letter}${meta['list_end_row']}"
     )
-    return f'=IF({selection_mode_ref}="All",COUNTA({list_range}),COUNTIF({selected_range_ref},"<>"))'
+    return f'=IF({selection_mode_ref}="{all_label}",COUNTA({list_range}),COUNTIF({selected_range_ref},"<>"))'
 
 
 def _add_dashboard_filter_controls(
@@ -845,13 +994,13 @@ def _add_dashboard_filter_controls(
     meta: dict[str, Any],
     start_row: int,
     start_col: int,
-    title: str = "WorkCenter Filter",
+    title: str | None = None,
 ) -> dict[str, Any]:
     title_start = ws.cell(start_row, start_col).coordinate
     title_end = ws.cell(start_row, start_col + 3).coordinate
     ws.merge_cells(f"{title_start}:{title_end}")
     title_cell = ws.cell(start_row, start_col)
-    title_cell.value = title
+    title_cell.value = title or _rt("workcenter_filter")
     title_cell.fill = HDR_FILL
     title_cell.font = Font(color="FFFFFF", bold=True, size=12)
     title_cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -865,32 +1014,40 @@ def _add_dashboard_filter_controls(
     ws.column_dimensions[get_column_letter(start_col + 3)].width = 12
 
     selection_mode_cell = ws.cell(start_row + 1, start_col + 1)
-    ws.cell(start_row + 1, start_col).value = "Selection Mode"
+    ws.cell(start_row + 1, start_col).value = _rt("selection_mode")
     ws.cell(start_row + 1, start_col).fill = SUBHDR_FILL
     ws.cell(start_row + 1, start_col).font = Font(bold=True, size=11)
     ws.cell(start_row + 1, start_col).border = BORDER
     ws.cell(start_row + 1, start_col).alignment = Alignment(horizontal="center", vertical="center")
-    selection_mode_cell.value = "All"
+    all_label = _rt("selection_mode_all")
+    filtered_label = _rt("selection_mode_filtered")
+    selection_mode_cell.value = all_label
     selection_mode_cell.border = BORDER
     selection_mode_cell.font = Font(size=11)
     selection_mode_cell.fill = CARD_NEUTRAL_FILL
     selection_mode_cell.alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[start_row + 1].height = 24
 
-    selection_dv = DataValidation(type="list", formula1='"All,Filtered"', allow_blank=False)
-    selection_dv.error = "Selection Mode must be All or Filtered."
-    selection_dv.prompt = "Choose All to show the full dashboard, or Filtered to limit it to selected workcenters."
+    selection_dv = DataValidation(type="list", formula1=f'"{all_label},{filtered_label}"', allow_blank=False)
+    selection_dv.error = _text(
+        "Selection Mode must be All or Filtered.",
+        "筛选模式必须是“全部”或“筛选”。",
+    )
+    selection_dv.prompt = _text(
+        "Choose All to show the full dashboard, or Filtered to limit it to selected workcenters.",
+        "选择“全部”显示完整仪表板，或选择“筛选”只看选中的工作中心。",
+    )
     ws.add_data_validation(selection_dv)
     selection_dv.add(selection_mode_cell)
 
     year_label_cell = ws.cell(start_row + 1, start_col + 2)
     year_value_cell = ws.cell(start_row + 1, start_col + 3)
-    year_label_cell.value = "Year"
+    year_label_cell.value = _rt("year")
     year_label_cell.fill = SUBHDR_FILL
     year_label_cell.font = Font(bold=True, size=11)
     year_label_cell.border = BORDER
     year_label_cell.alignment = Alignment(horizontal="center", vertical="center")
-    year_value_cell.value = "All"
+    year_value_cell.value = all_label
     year_value_cell.border = BORDER
     year_value_cell.font = Font(size=11)
     year_value_cell.fill = CARD_NEUTRAL_FILL
@@ -902,8 +1059,14 @@ def _add_dashboard_filter_controls(
         f"${year_col_letter}${meta['year_list_end_row']}"
     )
     year_dv = DataValidation(type="list", formula1=year_formula, allow_blank=False)
-    year_dv.error = "Select All or a year from the dropdown list."
-    year_dv.prompt = "Choose All for the full horizon, or a specific year."
+    year_dv.error = _text(
+        "Select All or a year from the dropdown list.",
+        "请从下拉框选择“全部”或具体年份。",
+    )
+    year_dv.prompt = _text(
+        "Choose All for the full horizon, or a specific year.",
+        "选择“全部”查看完整周期，或选择某一个年份。",
+    )
     ws.add_data_validation(year_dv)
     year_dv.add(year_value_cell)
 
@@ -912,8 +1075,14 @@ def _add_dashboard_filter_controls(
         f"={_excel_sheet_ref(meta['sheet_name'])}!${list_col_letter}${meta['list_start_row']}:${list_col_letter}${meta['list_end_row']}"
     )
     workcenter_dv = DataValidation(type="list", formula1=list_formula, allow_blank=True)
-    workcenter_dv.error = "Select a workcenter from the dropdown list."
-    workcenter_dv.prompt = "Pick one or more workcenters to filter the dashboard."
+    workcenter_dv.error = _text(
+        "Select a workcenter from the dropdown list.",
+        "请从下拉框选择工作中心。",
+    )
+    workcenter_dv.prompt = _text(
+        "Pick one or more workcenters to filter the dashboard.",
+        "选择一个或多个工作中心来筛选仪表板。",
+    )
     ws.add_data_validation(workcenter_dv)
 
     selected_cells: list[str] = []
@@ -921,7 +1090,7 @@ def _add_dashboard_filter_controls(
         row_num = start_row + 2 + offset
         label_cell = ws.cell(row_num, start_col)
         value_cell = ws.cell(row_num, start_col + 1)
-        label_cell.value = f"WorkCenter {offset + 1}"
+        label_cell.value = f"{_rt('workcenter_filter')} {offset + 1}"
         label_cell.fill = SUBHDR_FILL
         label_cell.font = Font(bold=True, size=11)
         label_cell.border = BORDER
@@ -939,8 +1108,12 @@ def _add_dashboard_filter_controls(
         f"{ws.cell(note_row, start_col).coordinate}:{ws.cell(note_row, start_col + 3).coordinate}"
     )
     ws.cell(note_row, start_col).value = (
-        "Use All for the full dashboard, or switch to Filtered and choose one or more workcenters. "
-        "Year can stay at All or be narrowed to a single year."
+        _text(
+            "Use All for the full dashboard, or switch to Filtered and choose one or more workcenters. "
+            "Year can stay at All or be narrowed to a single year.",
+            "使用“全部”查看完整仪表板，或切换到“筛选”并选择一个或多个工作中心。"
+            "年份也可以保持为“全部”或收缩到单一年份。",
+        )
     )
     ws.cell(note_row, start_col).font = NOTE_FONT
     ws.cell(note_row, start_col).fill = CARD_NEUTRAL_FILL
@@ -968,13 +1141,18 @@ def _write_dashboard(
     dashboard_facts_by_mode: dict[str, pd.DataFrame],
     issues: Optional[List[ValidationIssue]] = None,
 ) -> None:
-    ws = wb.create_sheet("Dashboard")
+    ws = wb.create_sheet(_sheet_title("Dashboard"))
     scenario = analysis.get("scenario_name") or preview_metrics.get("scenario_name") or "N/A"
-    subtitle = (
-        f"Scenario: {scenario} | Mode: {mode} | "
-        f"Horizon months: {preview_metrics.get('months', 0)}"
+    scenario_label = localize_value(_lang(), scenario)
+    subtitle = _text(
+        f"Scenario: {scenario} | Mode: {mode} | Horizon months: {preview_metrics.get('months', 0)}",
+        f"场景：{scenario_label} | 模式：{localize_mode(_lang(), mode)} | 滚动月份：{preview_metrics.get('months', 0)}",
     )
-    _prepare_dashboard_sheet(ws, f"Executive Summary - {mode}", subtitle)
+    _prepare_dashboard_sheet(
+        ws,
+        _rt("sheet_title_dashboard_mode", mode=localize_mode(_lang(), mode)),
+        subtitle,
+    )
     fact_meta = _write_dashboard_fact_sheet(wb, dashboard_facts_by_mode)
     filter_refs = _add_dashboard_filter_controls(ws, fact_meta, start_row=3, start_col=15)
     selection_mode_ref = filter_refs["selection_mode_ref"]
@@ -1066,9 +1244,9 @@ def _write_dashboard(
         {
             "Category": ["Internal", "Outsourced", "Unmet"],
             "Tons": [
-                f"='Dashboard'!{internal_cell}",
-                f"='Dashboard'!{outsource_cell}",
-                f"='Dashboard'!{unmet_cell}",
+                f"='{ws.title}'!{internal_cell}",
+                f"='{ws.title}'!{outsource_cell}",
+                f"='{ws.title}'!{unmet_cell}",
             ],
         }
     )
@@ -1080,13 +1258,13 @@ def _write_dashboard(
     helper_ws = wb[mix_layout["sheet_name"]]
 
     ws.merge_cells("A16:H16")
-    ws["A16"] = "Supply Mix"
+    ws["A16"] = _rt("supply_mix")
     ws["A16"].fill = SUMMARY_FILL
     ws["A16"].font = Font(bold=True, color="1F4E79", size=15)
     ws["A16"].alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[16].height = 24
     mix_chart = BarChart()
-    mix_chart.title = "Supply Mix"
+    mix_chart.title = _rt("supply_mix")
     mix_chart.height = 8.5
     mix_chart.width = 18.5
     mix_chart.add_data(
@@ -1119,7 +1297,7 @@ def _write_executive_comparison(
     artifacts: dict[str, dict[str, Any]],
     metrics_by_mode: dict[str, dict[str, Any]],
 ) -> None:
-    ws = wb.create_sheet("Executive_Comparison")
+    ws = wb.create_sheet(_sheet_title("Executive_Comparison"))
     fact_meta = _write_dashboard_fact_sheet(
         wb,
         {mode: artifacts[mode]["dashboard_fact"] for mode in ("ModeA", "ModeB")},
@@ -1127,8 +1305,12 @@ def _write_executive_comparison(
     mode_a = metrics_by_mode["ModeA"]
     mode_b = metrics_by_mode["ModeB"]
     scenario = mode_a.get("scenario_name") or mode_b.get("scenario_name") or "N/A"
-    subtitle = f"Scenario: {scenario} | Compare ModeA and ModeB with the same WorkCenter and Year filters"
-    _prepare_dashboard_sheet(ws, "Summary of Mode A and Mode B", subtitle)
+    scenario_label = localize_value(_lang(), scenario)
+    subtitle = _text(
+        f"Scenario: {scenario} | Compare ModeA and ModeB with the same WorkCenter and Year filters",
+        f"场景：{scenario_label} | 在相同工作中心和年份筛选条件下比较模式A与模式B",
+    )
+    _prepare_dashboard_sheet(ws, _rt("sheet_title_summary_modes"), subtitle)
     filter_refs = _add_dashboard_filter_controls(ws, fact_meta, start_row=3, start_col=15)
     selection_mode_ref = filter_refs["selection_mode_ref"]
     selected_range_ref = filter_refs["selected_range"]
@@ -1237,14 +1419,14 @@ def _write_executive_comparison(
         {
             "Category": ["Internal", "Outsourced", "Unmet"],
             "ModeA": [
-                f"='Executive_Comparison'!{internal_cells['ModeA']}",
-                f"='Executive_Comparison'!{outsourced_cells['ModeA']}",
-                f"='Executive_Comparison'!{unmet_cells['ModeA']}",
+                f"='{ws.title}'!{internal_cells['ModeA']}",
+                f"='{ws.title}'!{outsourced_cells['ModeA']}",
+                f"='{ws.title}'!{unmet_cells['ModeA']}",
             ],
             "ModeB": [
-                f"='Executive_Comparison'!{internal_cells['ModeB']}",
-                f"='Executive_Comparison'!{outsourced_cells['ModeB']}",
-                f"='Executive_Comparison'!{unmet_cells['ModeB']}",
+                f"='{ws.title}'!{internal_cells['ModeB']}",
+                f"='{ws.title}'!{outsourced_cells['ModeB']}",
+                f"='{ws.title}'!{unmet_cells['ModeB']}",
             ],
         }
     )
@@ -1255,13 +1437,13 @@ def _write_executive_comparison(
     )
     helper_ws = wb[mix_layout["sheet_name"]]
     ws.merge_cells("A16:H16")
-    ws["A16"] = "Supply Mix Comparison"
+    ws["A16"] = _rt("supply_mix_comparison")
     ws["A16"].fill = SUMMARY_FILL
     ws["A16"].font = Font(bold=True, color="1F4E79", size=15)
     ws["A16"].alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[16].height = 24
     chart = BarChart()
-    chart.title = "Supply Mix Comparison"
+    chart.title = _rt("supply_mix_comparison")
     chart.height = 8.5
     chart.width = 12.5
     chart.add_data(
@@ -1279,8 +1461,8 @@ def _write_executive_comparison(
         {
             "Mode": ["ModeA", "ModeB"],
             "Service_Level": [
-                f"='Executive_Comparison'!{service_cells['ModeA']}",
-                f"='Executive_Comparison'!{service_cells['ModeB']}",
+                f"='{ws.title}'!{service_cells['ModeA']}",
+                f"='{ws.title}'!{service_cells['ModeB']}",
             ],
         }
     )
@@ -1290,7 +1472,7 @@ def _write_executive_comparison(
         num_formats={"Service_Level": PCT_FMT},
     )
     service_chart = BarChart()
-    service_chart.title = "Service Level Comparison"
+    service_chart.title = _rt("service_level_comparison")
     service_chart.height = 8.5
     service_chart.width = 9.5
     service_chart.varyColors = True
@@ -1303,7 +1485,7 @@ def _write_executive_comparison(
     )
     _style_dashboard_service_chart(service_chart, ["2F75B5"])
     ws.merge_cells("L16:T16")
-    ws["L16"] = "Service Level Comparison"
+    ws["L16"] = _rt("service_level_comparison")
     ws["L16"].fill = SUMMARY_FILL
     ws["L16"].font = Font(bold=True, color="1F4E79", size=15)
     ws["L16"].alignment = Alignment(horizontal="center", vertical="center")
@@ -1313,11 +1495,15 @@ def _write_executive_comparison(
 
 
 def _write_monthly_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]) -> None:
-    ws = wb.create_sheet("Monthly_Trend_Compare")
-    _write_sheet_title(ws, "Monthly Trend Comparison")
+    ws = wb.create_sheet(_sheet_title("Monthly_Trend_Compare"))
+    _write_sheet_title(ws, _text("Monthly Trend Comparison", "月度趋势对比"))
     _prepare_monthly_trend_sheet(
         ws,
-        "Compare ModeA and ModeB month by month across demand, supply mix, unmet, and service level.",
+        _text(
+            "Compare ModeA and ModeB month by month across demand, supply mix, unmet, and service level.",
+            "按月份对比模式A与模式B的需求、供给结构、未满足和服务水平。",
+        ),
+        header_end_col="L",
     )
 
     monthly_a = artifacts["ModeA"]["analysis"]["monthly_summary"].copy()
@@ -1326,13 +1512,6 @@ def _write_monthly_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
     monthly_compare["Service_Level_Delta"] = monthly_compare["Service_Level_ModeB"] - monthly_compare["Service_Level_ModeA"]
     monthly_compare["Unmet_Delta"] = monthly_compare["Unmet_Tons_ModeB"] - monthly_compare["Unmet_Tons_ModeA"]
     monthly_compare = monthly_compare.sort_values("Month")
-
-    ws.merge_cells("A3:L3")
-    ws["A3"] = "Monthly comparison detail"
-    ws["A3"].fill = SUMMARY_FILL
-    ws["A3"].font = Font(bold=True, color="1F4E79", size=12)
-    ws["A3"].alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[3].height = 22
 
     layout = _write_table(
         ws,
@@ -1352,7 +1531,7 @@ def _write_monthly_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
                 "Unmet_Delta",
             ]
         ],
-        start_row=4,
+        start_row=3,
         start_col=1,
         num_formats={
             "Demand_Tons_ModeA": TONS_FMT,
@@ -1368,17 +1547,18 @@ def _write_monthly_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
             "Unmet_Delta": TONS_FMT,
         },
         highlight_positive_cols=["Unmet_Delta"],
-        freeze="A5",
+        freeze="A4",
         alternating_fill=ALT_ROW_FILL,
     )
+    _sync_sheet_header_width(ws, layout["end_col"])
 
     _autofit(ws)
     _set_monthly_trend_column_layout(ws)
 
 
 def _write_bottleneck_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]) -> None:
-    ws = wb.create_sheet("Bottleneck_Compare")
-    _write_sheet_title(ws, "Bottleneck Comparison")
+    ws = wb.create_sheet(_sheet_title("Bottleneck_Compare"))
+    _write_sheet_title(ws, _text("Bottleneck Comparison", "瓶颈对比"))
 
     wc_a = artifacts["ModeA"]["analysis"]["wc_summary"].copy()
     wc_b = artifacts["ModeB"]["analysis"]["wc_summary"].copy()
@@ -1387,107 +1567,90 @@ def _write_bottleneck_comparison(wb: Workbook, artifacts: dict[str, dict[str, An
     wc_compare["SortKey"] = wc_compare[["PeakLoadPct_ModeA", "PeakLoadPct_ModeB"]].max(axis=1)
     wc_compare = wc_compare.sort_values(["SortKey", "PeakLoadPct_ModeB"], ascending=[False, False]).head(15)
 
-    ws.merge_cells("A2:H2")
-    ws["A2"] = "Top bottleneck workcenters"
-    ws["A2"].fill = SUMMARY_FILL
-    ws["A2"].font = Font(bold=True, color="1F4E79", size=12)
-    ws["A2"].alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[2].height = 22
+    ws["A1"] = _rt("top_bottleneck_workcenters")
+    ws["A1"].fill = SUMMARY_FILL
+    ws["A1"].font = Font(bold=True, color="1F4E79", size=12)
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 22
 
     layout = _write_table(
         ws,
         wc_compare[
             [
                 "WorkCenter",
-                "AvgLoadPct_ModeA",
-                "AvgLoadPct_ModeB",
                 "PeakLoadPct_ModeA",
                 "PeakLoadPct_ModeB",
+                "PeakLoad_Delta",
                 "Over95Months_ModeA",
                 "Over95Months_ModeB",
-                "PeakLoad_Delta",
             ]
         ],
-        start_row=3,
+        start_row=2,
         start_col=1,
         num_formats={
-            "AvgLoadPct_ModeA": PCT_FMT,
-            "AvgLoadPct_ModeB": PCT_FMT,
             "PeakLoadPct_ModeA": PCT_FMT,
             "PeakLoadPct_ModeB": PCT_FMT,
+            "PeakLoad_Delta": PCT_FMT,
             "Over95Months_ModeA": INT_FMT,
             "Over95Months_ModeB": INT_FMT,
-            "PeakLoad_Delta": PCT_FMT,
         },
         alternating_fill=ALT_ROW_FILL,
-        freeze="A4",
+        freeze="A3",
     )
+    _merge_row_span(ws, 1, 1, layout["end_col"])
 
-    focus_wc = str(wc_compare.iloc[0]["WorkCenter"]) if not wc_compare.empty else ""
-    if focus_wc:
-        focus_title_row = layout["end_row"] + 3
-        ws.merge_cells(f"A{focus_title_row}:D{focus_title_row}")
-        ws.cell(focus_title_row, 1).value = f"Focused workcenter comparison: {focus_wc}"
-        ws.cell(focus_title_row, 1).fill = SUMMARY_FILL
-        ws.cell(focus_title_row, 1).font = Font(bold=True, color="1F4E79", size=12)
-        ws.cell(focus_title_row, 1).alignment = Alignment(horizontal="center", vertical="center")
-        ws.row_dimensions[focus_title_row].height = 22
-        focus_a = artifacts["ModeA"]["analysis"]["wc_long"]
-        focus_b = artifacts["ModeB"]["analysis"]["wc_long"]
-        focus_compare = (
-            focus_a[focus_a["WorkCenter"] == focus_wc][["Month", "LoadPct"]]
-            .rename(columns={"LoadPct": "Load_ModeA"})
-            .merge(
-                focus_b[focus_b["WorkCenter"] == focus_wc][["Month", "LoadPct"]].rename(columns={"LoadPct": "Load_ModeB"}),
-                on="Month",
-                how="outer",
-            )
-            .fillna(0.0)
-            .sort_values("Month")
+    detail_title_row = layout["end_row"] + 3
+    ws.cell(detail_title_row, 1).value = _text(
+        "Workcenter monthly trend comparison detail",
+        "工作中心月度趋势对比明细",
+    )
+    ws.cell(detail_title_row, 1).fill = SUMMARY_FILL
+    ws.cell(detail_title_row, 1).font = Font(bold=True, color="1F4E79", size=12)
+    ws.cell(detail_title_row, 1).alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[detail_title_row].height = 22
+
+    focus_a = artifacts["ModeA"]["analysis"]["wc_long"][["WorkCenter", "Month", "LoadPct"]].copy()
+    focus_b = artifacts["ModeB"]["analysis"]["wc_long"][["WorkCenter", "Month", "LoadPct"]].copy()
+    focus_compare = (
+        focus_a.rename(columns={"LoadPct": "Load_ModeA"})
+        .merge(
+            focus_b.rename(columns={"LoadPct": "Load_ModeB"}),
+            on=["WorkCenter", "Month"],
+            how="outer",
         )
-        focus_compare["Load_Delta"] = focus_compare["Load_ModeB"] - focus_compare["Load_ModeA"]
-        focus_layout = _write_table(
-            ws,
-            focus_compare,
-            start_row=focus_title_row + 1,
-            start_col=1,
-            num_formats={"Load_ModeA": PCT_FMT, "Load_ModeB": PCT_FMT, "Load_Delta": PCT_FMT},
-            alternating_fill=ALT_ROW_FILL,
-        )
-        focus_chart = LineChart()
-        focus_chart.title = f"{focus_wc} Load Trend Comparison"
-        focus_chart.height = 9
-        focus_chart.width = 16
-        focus_chart.add_data(
-            Reference(
-                ws,
-                min_col=focus_layout["col_index"]["Load_ModeA"],
-                min_row=focus_layout["start_row"],
-                max_col=focus_layout["col_index"]["Load_ModeB"],
-                max_row=focus_layout["end_row"],
-            ),
-            titles_from_data=True,
-            from_rows=False,
-        )
-        focus_chart.set_categories(
-            Reference(ws, min_col=focus_layout["col_index"]["Month"], min_row=focus_layout["start_row"] + 1, max_row=focus_layout["end_row"])
-        )
-        focus_chart.y_axis.numFmt = PCT_FMT
-        _apply_chart_palette(focus_chart, ["2F75B5", "ED7D31"])
-        chart_title_row = focus_layout["end_row"] + 3
-        ws.merge_cells(f"A{chart_title_row}:H{chart_title_row}")
-        ws.cell(chart_title_row, 1).value = f"{focus_wc} Load Trend Comparison"
-        ws.cell(chart_title_row, 1).fill = SUMMARY_FILL
-        ws.cell(chart_title_row, 1).font = Font(bold=True, color="1F4E79", size=12)
-        ws.cell(chart_title_row, 1).alignment = Alignment(horizontal="center", vertical="center")
-        ws.row_dimensions[chart_title_row].height = 22
-        ws.add_chart(focus_chart, f"A{chart_title_row + 1}")
+        .fillna(0.0)
+        .sort_values(["WorkCenter", "Month"], ascending=[True, True])
+    )
+    focus_compare["Load_Delta"] = focus_compare["Load_ModeB"] - focus_compare["Load_ModeA"]
+    focus_compare = focus_compare.rename(
+        columns={
+            "WorkCenter": _text("WorkCenter", "工作中心"),
+            "Month": _text("Month", "月份"),
+            "Load_ModeA": _text("Load%_ModeA", "负载率_模式A"),
+            "Load_ModeB": _text("Load%_ModeB", "负载率_模式B"),
+            "Load_Delta": _text("Load%_Delta", "负载率_差异"),
+        }
+    )
+    detail_layout = _write_table(
+        ws,
+        focus_compare,
+        start_row=detail_title_row + 1,
+        start_col=1,
+        num_formats={
+            _text("Load%_ModeA", "负载率_模式A"): PCT_FMT,
+            _text("Load%_ModeB", "负载率_模式B"): PCT_FMT,
+            _text("Load%_Delta", "负载率_差异"): PCT_FMT,
+        },
+        alternating_fill=ALT_ROW_FILL,
+        freeze=f"A{detail_title_row + 2}",
+    )
+    _merge_row_span(ws, detail_title_row, 1, detail_layout["end_col"])
     _autofit(ws)
 
 
 def _write_heatmap_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]) -> None:
-    ws = wb.create_sheet("WC_Heatmap_Compare")
-    _write_sheet_title(ws, "WorkCenter Heatmap Comparison - Demand and Load%")
+    ws = wb.create_sheet(_sheet_title("WC_Heatmap_Compare"))
+    _write_sheet_title(ws, _text("WorkCenter Heatmap Comparison - Demand and Load%", "工作中心热力图对比 - 需求与负载率"))
 
     wc_names = []
     for mode in ("ModeA", "ModeB"):
@@ -1498,7 +1661,7 @@ def _write_heatmap_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
     next_start_row = 2
     for mode in ("ModeA", "ModeB"):
         header_cell = ws.cell(next_start_row, 1)
-        header_cell.value = f"{mode} Heatmap"
+        header_cell.value = _rt("sheet_title_heatmap_mode", mode=localize_mode(_lang(), mode))
         header_cell.font = Font(color="FFFFFF", bold=True, size=11)
         header_cell.fill = MODEA_FILL if mode == "ModeA" else MODEB_FILL
         header_cell.alignment = Alignment(horizontal="left", vertical="center")
@@ -1508,7 +1671,7 @@ def _write_heatmap_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
         wc_long = artifacts[mode]["analysis"]["wc_long"]
         wc_tons_df = artifacts[mode].get("wc_tons_df", pd.DataFrame())
         if wc_long.empty and wc_tons_df.empty:
-            ws.cell(next_start_row + 1, 1).value = "No heatmap data"
+            ws.cell(next_start_row + 1, 1).value = _text("No heatmap data", "没有可用的热力图数据")
             next_start_row += 4
             continue
 
@@ -1531,7 +1694,7 @@ def _write_heatmap_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
         )
         yearly_frame = _summarize_heatmap_months_to_years(monthly_frame, months)
 
-        ws.cell(next_start_row + 1, 1).value = "Yearly summary"
+        ws.cell(next_start_row + 1, 1).value = _rt("yearly_summary")
         ws.cell(next_start_row + 1, 1).font = Font(bold=True, color="1F4E79", size=11)
         yearly_view = _prepare_heatmap_display_frame(yearly_frame, wc_names)
         yearly_layout = _write_table(
@@ -1540,10 +1703,12 @@ def _write_heatmap_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
             start_row=next_start_row + 2,
             start_col=1,
         )
+        _merge_row_span(ws, next_start_row, 1, max(yearly_layout["end_col"], 1))
+        _merge_row_span(ws, next_start_row + 1, 1, yearly_layout["end_col"])
         _style_capacity_heatmap_block(ws, yearly_layout, yearly_view)
 
         monthly_start_row = yearly_layout["end_row"] + 4
-        ws.cell(monthly_start_row - 1, 1).value = "Monthly detail"
+        ws.cell(monthly_start_row - 1, 1).value = _rt("monthly_detail")
         ws.cell(monthly_start_row - 1, 1).font = Font(bold=True, color="1F4E79", size=11)
         monthly_view = _prepare_heatmap_display_frame(monthly_frame, wc_names)
         monthly_layout = _write_table(
@@ -1552,6 +1717,7 @@ def _write_heatmap_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
             start_row=monthly_start_row,
             start_col=1,
         )
+        _merge_row_span(ws, monthly_start_row - 1, 1, monthly_layout["end_col"])
         _style_capacity_heatmap_block(ws, monthly_layout, monthly_view)
         next_start_row = monthly_layout["end_row"] + 4
 
@@ -1561,12 +1727,14 @@ def _write_heatmap_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
         "ModeA is shown first and ModeB directly below. Each block now includes a yearly summary and monthly detail, "
         "with Demand rows and Load% rows aligned to the same workcenter ordering.",
     )
+    if next_start_row > 2:
+        _merge_row_span(ws, 1, 1, max(ws.max_column, 1))
     _autofit(ws)
 
 
 def _write_product_risk_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]) -> None:
-    ws = wb.create_sheet("Product_Risk_Compare")
-    _write_sheet_title(ws, "Product Risk Comparison")
+    ws = wb.create_sheet(_sheet_title("Product_Risk_Compare"))
+    _write_sheet_title(ws, _text("Product Risk Comparison", "产品风险对比"))
     _prepare_product_risk_sheet(ws)
 
     product_a = artifacts["ModeA"]["analysis"]["product_summary"].copy()
@@ -1631,13 +1799,14 @@ def _write_product_risk_comparison(wb: Workbook, artifacts: dict[str, dict[str, 
             "Service_Level_Delta",
         ],
     )
+    _merge_row_span(ws, 1, 1, layout["end_col"])
     _autofit(ws)
     _set_product_risk_column_layout(ws)
 
 
 def _write_planner_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]) -> None:
-    ws = wb.create_sheet("Planner_Compare")
-    _write_sheet_title(ws, "Planner Comparison")
+    ws = wb.create_sheet(_sheet_title("Planner_Compare"))
+    _write_sheet_title(ws, _text("Planner Comparison", "计划员对比"))
 
     planner_a = artifacts["ModeA"]["analysis"]["planner_summary"].copy()
     planner_b = artifacts["ModeB"]["analysis"]["planner_summary"].copy()
@@ -1650,7 +1819,7 @@ def _write_planner_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
         planner_b = planner_b[planner_b["PlannerName"].astype(str).str.strip().ne("")]
 
     if planner_a.empty and planner_b.empty:
-        ws["A3"] = "No planner comparison data is available for this result."
+        ws["A3"] = _text("No planner comparison data is available for this result.", "当前结果没有可用的计划员对比数据。")
         return
 
     planner_compare = planner_a.merge(
@@ -1702,10 +1871,11 @@ def _write_planner_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
         },
         freeze="B2",
     )
+    _merge_row_span(ws, 1, 1, layout["end_col"])
 
     service_chart = BarChart()
-    service_chart.title = "Planner Service Level Comparison"
-    service_chart.y_axis.title = "Service level"
+    service_chart.title = _text("Planner Service Level Comparison", "计划员服务水平对比")
+    service_chart.y_axis.title = _text("Service level", "服务水平")
     service_chart.height = 8
     service_chart.width = 12
     service_chart.add_data(
@@ -1732,7 +1902,7 @@ def _write_planner_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
 
     unmet_chart = BarChart()
     unmet_chart.type = "bar"
-    unmet_chart.title = "Planner Residual Unmet Comparison"
+    unmet_chart.title = _text("Planner Residual Unmet Comparison", "计划员剩余未满足对比")
     unmet_chart.height = 8
     unmet_chart.width = 12
     unmet_chart.add_data(
@@ -1758,7 +1928,10 @@ def _write_planner_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
 
     focus_planner = str(planner_compare.iloc[0]["PlannerName"]) if not planner_compare.empty else ""
     if focus_planner:
-        ws["A24"] = f"Focused planner comparison: {focus_planner}"
+        ws["A24"] = _text(
+            f"Focused planner comparison: {focus_planner}",
+            f"重点计划员对比：{focus_planner}",
+        )
         ws["A24"].font = Font(bold=True, color="1F4E79", size=11)
 
         planner_month_a = (
@@ -1825,7 +1998,10 @@ def _write_planner_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
         )
 
         focus_chart = LineChart()
-        focus_chart.title = f"{focus_planner} Monthly Service Level Comparison"
+        focus_chart.title = _text(
+            f"{focus_planner} Monthly Service Level Comparison",
+            f"{focus_planner} 月度服务水平对比",
+        )
         focus_chart.height = 7
         focus_chart.width = 12
         focus_chart.add_data(
@@ -1864,8 +2040,8 @@ def _write_comparison_run_info(
     metrics_by_mode: dict[str, dict[str, Any]],
     workbook_name: str,
 ) -> None:
-    ws = wb.create_sheet("Run_Info")
-    _write_sheet_title(ws, "Comparison Run Info")
+    ws = wb.create_sheet(_sheet_title("Run_Info"))
+    _write_sheet_title(ws, _text("Comparison Run Info", "对比运行信息"))
     info_df = pd.DataFrame(
         [
             ("Workbook_Name", workbook_name),
@@ -1905,7 +2081,7 @@ def _write_capacity_basis_dashboard(
     issues: Optional[List[ValidationIssue]] = None,
     sheet_name: str = "Dashboard",
 ) -> None:
-    ws = wb.create_sheet(sheet_name)
+    ws = wb.create_sheet(_sheet_title(sheet_name))
     fact_meta = _write_dashboard_fact_sheet(
         wb,
         {basis: artifacts[basis]["dashboard_fact"] for basis in ("Max", "Planner")},
@@ -1915,8 +2091,21 @@ def _write_capacity_basis_dashboard(
         or artifacts["Planner"]["analysis"].get("scenario_name")
         or "N/A"
     )
-    subtitle = f"Scenario: {scenario} | Mode: {mode} | Capacity basis comparison: Max vs Planner"
-    _prepare_dashboard_sheet(ws, f"Executive Summary - {mode} Capacity Comparison", subtitle)
+    scenario_label = localize_value(_lang(), scenario)
+    subtitle = _text(
+        f"Scenario: {scenario} | Mode: {mode} | Capacity basis comparison: Max vs Planner",
+        f"场景：{scenario_label} | 模式：{localize_mode(_lang(), mode)} | 产能口径对比：最大产能 对比 计划产能",
+    )
+    if _is_mode_b_report(mode):
+        subtitle = _text(
+            f"Scenario: {scenario} | Mode: {mode} | Shared Stage 1 baseline with Max vs Planner Stage 2 overflow comparison",
+            f"场景：{scenario_label} | 模式：{localize_mode(_lang(), mode)} | Stage 1 共用基础产能，仅比较 Stage 2 在最大产能与计划产能下的溢出结果。",
+        )
+    _prepare_dashboard_sheet(
+        ws,
+        _rt("sheet_title_dashboard_capacity", mode=localize_mode(_lang(), mode)),
+        subtitle,
+    )
     filter_refs = _add_dashboard_filter_controls(ws, fact_meta, start_row=3, start_col=15)
     selection_mode_ref = filter_refs["selection_mode_ref"]
     selected_range_ref = filter_refs["selected_range"]
@@ -2025,14 +2214,14 @@ def _write_capacity_basis_dashboard(
         {
             "Category": ["Internal", "Outsourced", "Unmet"],
             "Max": [
-                f"='{sheet_name}'!{internal_cells['Max']}",
-                f"='{sheet_name}'!{outsourced_cells['Max']}",
-                f"='{sheet_name}'!{unmet_cells['Max']}",
+                f"='{ws.title}'!{internal_cells['Max']}",
+                f"='{ws.title}'!{outsourced_cells['Max']}",
+                f"='{ws.title}'!{unmet_cells['Max']}",
             ],
             "Planner": [
-                f"='{sheet_name}'!{internal_cells['Planner']}",
-                f"='{sheet_name}'!{outsourced_cells['Planner']}",
-                f"='{sheet_name}'!{unmet_cells['Planner']}",
+                f"='{ws.title}'!{internal_cells['Planner']}",
+                f"='{ws.title}'!{outsourced_cells['Planner']}",
+                f"='{ws.title}'!{unmet_cells['Planner']}",
             ],
         }
     )
@@ -2043,13 +2232,13 @@ def _write_capacity_basis_dashboard(
     )
     helper_ws = wb[mix_layout["sheet_name"]]
     ws.merge_cells("A16:H16")
-    ws["A16"] = "Supply Mix Comparison"
+    ws["A16"] = _rt("supply_mix_comparison")
     ws["A16"].fill = SUMMARY_FILL
     ws["A16"].font = Font(bold=True, color="1F4E79", size=15)
     ws["A16"].alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[16].height = 24
     chart = BarChart()
-    chart.title = "Supply Mix Comparison"
+    chart.title = _rt("supply_mix_comparison")
     chart.height = 8.5
     chart.width = 12.5
     chart.add_data(
@@ -2078,8 +2267,8 @@ def _write_capacity_basis_dashboard(
         {
             "Basis": ["Max", "Planner"],
             "Service_Level": [
-                f"='{sheet_name}'!{service_cells['Max']}",
-                f"='{sheet_name}'!{service_cells['Planner']}",
+                f"='{ws.title}'!{service_cells['Max']}",
+                f"='{ws.title}'!{service_cells['Planner']}",
             ],
         }
     )
@@ -2089,7 +2278,7 @@ def _write_capacity_basis_dashboard(
         num_formats={"Service_Level": PCT_FMT},
     )
     service_chart = BarChart()
-    service_chart.title = "Service Level Comparison"
+    service_chart.title = _rt("service_level_comparison")
     service_chart.height = 8.5
     service_chart.width = 9.5
     service_chart.add_data(
@@ -2111,7 +2300,7 @@ def _write_capacity_basis_dashboard(
     )
     _style_dashboard_service_chart(service_chart, ["2F75B5"])
     ws.merge_cells("L16:T16")
-    ws["L16"] = "Service Level Comparison"
+    ws["L16"] = _rt("service_level_comparison")
     ws["L16"].fill = SUMMARY_FILL
     ws["L16"].font = Font(bold=True, color="1F4E79", size=15)
     ws["L16"].alignment = Alignment(horizontal="center", vertical="center")
@@ -2126,11 +2315,15 @@ def _write_capacity_basis_monthly_analysis(
     mode: str,
     artifacts: dict[str, dict[str, Any]],
 ) -> None:
-    ws = wb.create_sheet("Monthly_Trend")
-    _write_sheet_title(ws, f"Monthly Trend - {mode} | Max vs Planner")
+    ws = wb.create_sheet(_sheet_title("Monthly_Trend"))
+    _write_sheet_title(ws, _rt("sheet_title_monthly_capacity", mode=localize_mode(_lang(), mode)))
     _prepare_monthly_trend_sheet(
         ws,
-        f"Compare Max and Planner capacity basis month by month for {mode}.",
+        _text(
+            f"Compare Max and Planner capacity basis month by month for {mode}.",
+            f"按月份比较 {localize_mode(_lang(), mode)} 在 Max 与 Planner 两种产能口径下的结果。",
+        ),
+        header_end_col="L",
     )
 
     monthly_max = artifacts["Max"]["analysis"]["monthly_summary"].copy()
@@ -2142,7 +2335,7 @@ def _write_capacity_basis_monthly_analysis(
         suffixes=("_Max", "_Planner"),
     ).fillna(0.0).sort_values("Month")
     if monthly_compare.empty:
-        ws["A3"] = "No monthly comparison data is available for this result."
+        ws["A3"] = _text("No monthly comparison data is available for this result.", "当前结果没有可用的月度对比数据。")
         return
 
     monthly_compare.insert(1, "Year", monthly_compare["Month"].astype(str).str[:4])
@@ -2175,8 +2368,7 @@ def _write_capacity_basis_monthly_analysis(
         .fillna(0.0)
     )
     yearly_compare["Unmet_Delta"] = yearly_compare["Unmet_Tons_Planner"] - yearly_compare["Unmet_Tons_Max"]
-    ws.merge_cells("A3:K3")
-    ws["A3"] = "Yearly summary"
+    ws["A3"] = _rt("yearly_summary")
     ws["A3"].fill = SUMMARY_FILL
     ws["A3"].font = Font(bold=True, color="1F4E79", size=12)
     ws["A3"].alignment = Alignment(horizontal="center", vertical="center")
@@ -2216,10 +2408,10 @@ def _write_capacity_basis_monthly_analysis(
         highlight_positive_cols=["Unmet_Delta"],
         alternating_fill=ALT_ROW_FILL,
     )
+    _merge_row_span(ws, 3, 1, yearly_layout["end_col"])
 
     monthly_start_row = yearly_layout["end_row"] + 4
-    ws.merge_cells(f"A{monthly_start_row - 1}:L{monthly_start_row - 1}")
-    ws.cell(monthly_start_row - 1, 1).value = "Monthly detail"
+    ws.cell(monthly_start_row - 1, 1).value = _rt("monthly_detail")
     ws.cell(monthly_start_row - 1, 1).fill = SUMMARY_FILL
     ws.cell(monthly_start_row - 1, 1).font = Font(bold=True, color="1F4E79", size=12)
     ws.cell(monthly_start_row - 1, 1).alignment = Alignment(horizontal="center", vertical="center")
@@ -2259,16 +2451,16 @@ def _write_capacity_basis_monthly_analysis(
         highlight_positive_cols=["Unmet_Tons_Max", "Unmet_Tons_Planner"],
         alternating_fill=ALT_ROW_FILL,
     )
-    ws.auto_filter.ref = (
-        f"A{monthly_layout['start_row']}:"
-        f"{get_column_letter(monthly_layout['end_col'])}{monthly_layout['end_row']}"
-    )
-
+    _merge_row_span(ws, monthly_start_row - 1, 1, monthly_layout["end_col"])
     _write_note(
         ws,
         f"A{monthly_layout['end_row'] + 2}",
-        "Use the Excel filter on the Year column to narrow this monthly view to a specific year when needed.",
+        _text(
+            "Use the Year filter when needed. For ModeB, demand and Stage 1 stay shared, while differences come from Stage 2 overflow under Max vs Planner.",
+            "如需只查看某一年的月度明细，请使用 Year 列的 Excel 筛选功能。",
+        ),
     )
+    _sync_sheet_header_width(ws, max(yearly_layout["end_col"], monthly_layout["end_col"]))
     _autofit(ws)
     _set_monthly_trend_column_layout(ws)
 
@@ -2278,8 +2470,8 @@ def _write_capacity_basis_bottleneck_analysis(
     mode: str,
     artifacts: dict[str, dict[str, Any]],
 ) -> None:
-    ws = wb.create_sheet("Bottleneck")
-    _write_sheet_title(ws, f"Bottleneck Analysis - {mode} | Max vs Planner")
+    ws = wb.create_sheet(_sheet_title("Bottleneck"))
+    _write_sheet_title(ws, _text(f"Bottleneck Analysis - {mode} | Max vs Planner", f"瓶颈分析 - {localize_mode(_lang(), mode)} | Max 对比 Planner"))
 
     wc_max = artifacts["Max"]["analysis"]["wc_summary"].copy()
     wc_planner = artifacts["Planner"]["analysis"]["wc_summary"].copy()
@@ -2290,14 +2482,13 @@ def _write_capacity_basis_bottleneck_analysis(
         suffixes=("_Max", "_Planner"),
     ).fillna(0.0)
     if wc_compare.empty:
-        ws["A3"] = "No workcenter load data is available for this result."
+        ws["A3"] = _text("No workcenter load data is available for this result.", "当前结果没有可用的工作中心负载数据。")
         return
 
     wc_compare["PeakLoad_Delta"] = wc_compare["PeakLoadPct_Planner"] - wc_compare["PeakLoadPct_Max"]
     wc_compare["SortKey"] = wc_compare[["PeakLoadPct_Max", "PeakLoadPct_Planner"]].max(axis=1)
     wc_compare = wc_compare.sort_values(["SortKey", "WorkCenter"], ascending=[False, True]).head(15)
-    ws.merge_cells("A2:H2")
-    ws["A2"] = "Top bottleneck workcenters"
+    ws["A2"] = _rt("top_bottleneck_workcenters")
     ws["A2"].fill = SUMMARY_FILL
     ws["A2"].font = Font(bold=True, color="1F4E79", size=12)
     ws["A2"].alignment = Alignment(horizontal="center", vertical="center")
@@ -2328,6 +2519,8 @@ def _write_capacity_basis_bottleneck_analysis(
         alternating_fill=ALT_ROW_FILL,
         freeze="A4",
     )
+    _merge_row_span(ws, 2, 1, layout["end_col"])
+    _sync_sheet_header_width(ws, layout["end_col"])
     _autofit(ws)
 
 
@@ -2339,10 +2532,17 @@ def _write_capacity_basis_heatmap(
     loads: List[LoadRecord],
     routings: List[RoutingRecord],
     months: List[str],
+    unmet_capacities_by_basis: Optional[dict[str, List[CapacityRecord]]] = None,
     sheet_name: str = "WC_Heatmap",
 ) -> None:
-    ws = wb.create_sheet(sheet_name)
-    _write_sheet_title(ws, f"WorkCenter Heatmap - {mode} | Demand, Max Load%, Planner Load%")
+    ws = wb.create_sheet(_sheet_title(sheet_name))
+    _write_sheet_title(
+        ws,
+        _text(
+            f"WorkCenter Heatmap - {mode} | Demand, Max Load%, Planner Load%",
+            f"工作中心热力图 - {localize_mode(_lang(), mode)} | 需求、Max 负载率、Planner 负载率",
+        ),
+    )
 
     heatmap_frames = build_capacity_compare_heatmap_frames(
         mode=mode,
@@ -2351,11 +2551,12 @@ def _write_capacity_basis_heatmap(
         loads=loads,
         routings=routings,
         months=months,
+        unmet_capacities_by_basis=unmet_capacities_by_basis,
     )
     yearly_df = heatmap_frames["yearly"]
     monthly_df = heatmap_frames["monthly"]
     if yearly_df.empty and monthly_df.empty:
-        ws["A3"] = "No heatmap data is available for this result."
+        ws["A3"] = _text("No heatmap data is available for this result.", "当前结果没有可用的热力图数据。")
         return
 
     ranking_source = yearly_df[yearly_df["Metric"].isin(["Max Load%", "Planner Load%"])].copy()
@@ -2372,7 +2573,7 @@ def _write_capacity_basis_heatmap(
     else:
         workcenters = list(dict.fromkeys(monthly_df["WorkCenter"].tolist()))[:12]
 
-    ws["A2"] = "Yearly summary"
+    ws["A2"] = _rt("yearly_summary")
     ws["A2"].font = Font(bold=True, color="1F4E79", size=11)
     yearly_view = _prepare_heatmap_display_frame(yearly_df, workcenters)
     yearly_layout = _write_table(
@@ -2381,10 +2582,11 @@ def _write_capacity_basis_heatmap(
         start_row=3,
         start_col=1,
     )
+    _merge_row_span(ws, 2, 1, yearly_layout["end_col"])
     _style_capacity_heatmap_block(ws, yearly_layout, yearly_view)
 
     monthly_start_row = yearly_layout["end_row"] + 4
-    ws.cell(monthly_start_row - 1, 1).value = "Monthly detail"
+    ws.cell(monthly_start_row - 1, 1).value = _rt("monthly_detail")
     ws.cell(monthly_start_row - 1, 1).font = Font(bold=True, color="1F4E79", size=11)
     monthly_view = _prepare_heatmap_display_frame(monthly_df, workcenters)
     monthly_layout = _write_table(
@@ -2393,13 +2595,18 @@ def _write_capacity_basis_heatmap(
         start_row=monthly_start_row,
         start_col=1,
     )
+    _merge_row_span(ws, monthly_start_row - 1, 1, monthly_layout["end_col"])
     _style_capacity_heatmap_block(ws, monthly_layout, monthly_view)
 
     _write_note(
         ws,
         f"A{monthly_layout['end_row'] + 2}",
-        "Demand rows follow the Planner-basis assigned tons. Max Load% and Planner Load% compare that workcenter demand against the two capacity baselines.",
+        _text(
+            "Demand rows follow the Planner-basis assigned tons. For ModeB, the load gap reflects Stage 2 overflow rerouting under Max vs Planner on top of a shared Stage 1 baseline.",
+            "Demand 行基于 Planner 口径下归属的吨位；Max Load% 和 Planner Load% 分别表示该工作中心需求相对两种产能口径的负载率。",
+        ),
     )
+    _sync_sheet_header_width(ws, max(yearly_layout["end_col"], monthly_layout["end_col"]))
     _autofit(ws)
 
 
@@ -2408,8 +2615,8 @@ def _write_capacity_basis_product_risk(
     mode: str,
     artifacts: dict[str, dict[str, Any]],
 ) -> None:
-    ws = wb.create_sheet("Product_Risk")
-    _write_sheet_title(ws, f"Product Risk - {mode} | Max vs Planner")
+    ws = wb.create_sheet(_sheet_title("Product_Risk"))
+    _write_sheet_title(ws, _text(f"Product Risk - {mode} | Max vs Planner", f"产品风险 - {localize_mode(_lang(), mode)} | Max 对比 Planner"))
     _prepare_product_risk_sheet(ws)
 
     product_max = artifacts["Max"]["analysis"]["product_summary"].copy()
@@ -2421,7 +2628,7 @@ def _write_capacity_basis_product_risk(
         suffixes=("_Max", "_Planner"),
     ).fillna(0.0)
     if product_compare.empty:
-        ws["A3"] = "No product comparison data is available for this result."
+        ws["A3"] = _text("No product comparison data is available for this result.", "当前结果没有可用的产品对比数据。")
         return
 
     product_compare["Unmet_Delta"] = product_compare["Unmet_Tons_Planner"] - product_compare["Unmet_Tons_Max"]
@@ -2477,6 +2684,7 @@ def _write_capacity_basis_product_risk(
             "Service_Level_Delta",
         ],
     )
+    _merge_row_span(ws, 1, 1, layout["end_col"])
     _autofit(ws)
     _set_product_risk_column_layout(ws)
 
@@ -2486,11 +2694,14 @@ def _write_capacity_basis_planner_summary(
     mode: str,
     artifacts: dict[str, dict[str, Any]],
 ) -> None:
-    ws = wb.create_sheet("Planner_Result_Summary")
+    ws = wb.create_sheet(_sheet_title("Planner_Result_Summary"))
     _prepare_planner_summary_sheet(
         ws,
-        title=f"Planner Result Summary - {mode} | Max vs Planner",
-        subtitle="Risk-first planner comparison across Max and Planner capacity baselines.",
+        title=_text(f"Planner Result Summary - {mode} | Max vs Planner", f"计划员结果汇总 - {localize_mode(_lang(), mode)} | Max 对比 Planner"),
+        subtitle=_text(
+            "Risk-first planner comparison across Max and Planner capacity baselines.",
+            "以风险优先的方式比较同一计划员在 Max 与 Planner 两种产能口径下的结果。",
+        ),
         compare_mode=True,
     )
 
@@ -2503,7 +2714,7 @@ def _write_capacity_basis_planner_summary(
         suffixes=("_Max", "_Planner"),
     ).fillna(0.0)
     if planner_compare.empty:
-        ws["A3"] = "No planner summary is available for this result."
+        ws["A3"] = _text("No planner summary is available for this result.", "当前结果没有可用的计划员汇总数据。")
         return
 
     planner_compare["Service_Level_Delta"] = planner_compare["Service_Level_Planner"] - planner_compare["Service_Level_Max"]
@@ -2552,7 +2763,10 @@ def _write_capacity_basis_planner_summary(
     _write_note(
         ws,
         f"A{layout['end_row'] + 2}",
-        "This planner comparison keeps planner traceability while showing how the capacity baseline shifts each planner's internal supply, outsourcing, and residual unmet.",
+        _text(
+            "This planner comparison keeps planner traceability while showing how planner outcomes shift under Max vs Planner. In ModeB, the shared Stage 1 baseline stays fixed and the difference comes from Stage 2 overflow.",
+            "该计划员对比表在保留 planner 可追溯性的同时，展示产能口径变化如何影响每位计划员的内部供应、外协和剩余未满足。",
+        ),
     )
     _autofit(ws)
     _set_planner_summary_column_layout(ws, compare_mode=True)
@@ -2577,6 +2791,7 @@ def _write_summary_capacity_basis_pages(
                 config,
                 months,
                 basis,
+                unmet_capacities=(payload.get("unmet_capacities_by_basis") or {}).get(basis),
             )
             for basis in ("Max", "Planner")
         }
@@ -2594,6 +2809,7 @@ def _write_summary_capacity_basis_pages(
             loads=payload["loads"],
             routings=payload["routings"],
             months=months,
+            unmet_capacities_by_basis=payload.get("unmet_capacities_by_basis"),
             sheet_name=f"{mode}_Cap_Heatmap",
         )
 
@@ -2699,7 +2915,6 @@ def _style_capacity_heatmap_block(
     if not value_columns:
         return
 
-    demand_max = float(df[df["Metric"] == "Demand"][value_columns].to_numpy().max()) if (df["Metric"] == "Demand").any() else 0.0
     for row_offset, (_, row) in enumerate(df.iterrows(), start=1):
         excel_row = layout["start_row"] + row_offset
         metric = str(row["Metric"])
@@ -2714,13 +2929,6 @@ def _style_capacity_heatmap_block(
             value = float(row[column] or 0.0)
             if metric == "Demand":
                 cell.number_format = TONS_FMT
-                if demand_max > 0:
-                    if value >= demand_max * 0.85:
-                        cell.fill = PatternFill("solid", fgColor="C00000")
-                    elif value >= demand_max * 0.55:
-                        cell.fill = PatternFill("solid", fgColor="F4B183")
-                    else:
-                        cell.fill = PatternFill("solid", fgColor="FFF2CC")
             else:
                 cell.number_format = PCT_FMT
                 if value >= 1.0:
@@ -2732,10 +2940,10 @@ def _style_capacity_heatmap_block(
 
 
 def _write_planner_product_month_detail(wb: Workbook, planner_product_month_df: pd.DataFrame) -> None:
-    ws = wb.create_sheet("Planner_Product_Month")
-    _write_sheet_title(ws, "Planner Product Month Summary")
+    ws = wb.create_sheet(_sheet_title("Planner_Product_Month"))
+    _write_sheet_title(ws, _text("Planner Product Month Summary", "计划员-产品-月份汇总"))
     if planner_product_month_df.empty:
-        ws["A3"] = "No planner product-month summary is available for this result."
+        ws["A3"] = _text("No planner product-month summary is available for this result.", "当前结果没有可用的计划员-产品-月份汇总。")
         return
     _write_table(
         ws,
@@ -2756,16 +2964,19 @@ def _write_planner_product_month_detail(wb: Workbook, planner_product_month_df: 
 
 
 def _write_monthly_analysis(wb: Workbook, analysis: dict[str, Any]) -> None:
-    ws = wb.create_sheet("Monthly_Trend")
-    _write_sheet_title(ws, "Monthly Trend")
+    ws = wb.create_sheet(_sheet_title("Monthly_Trend"))
+    _write_sheet_title(ws, _rt("sheet_title_monthly_mode", mode=localize_mode(_lang(), analysis.get("mode_name") or "Mode")))
     _prepare_monthly_trend_sheet(
         ws,
-        "Review monthly demand, internal supply, outsourced volume, unmet demand, and service level.",
+        _text(
+            "Review monthly demand, internal supply, outsourced volume, unmet demand, and service level.",
+            "查看月度需求、内部供应、外协量、未满足需求和服务水平。",
+        ),
     )
 
     monthly_summary = analysis["monthly_summary"]
     if monthly_summary.empty:
-        ws["A3"] = "No monthly summary is available for this result."
+        ws["A3"] = _text("No monthly summary is available for this result.", "当前结果没有可用的月度汇总数据。")
         return
 
     monthly_detail = monthly_summary.copy()
@@ -2787,8 +2998,7 @@ def _write_monthly_analysis(wb: Workbook, analysis: dict[str, Any]) -> None:
         .fillna(0.0)
     )
 
-    ws.merge_cells("A3:G3")
-    ws["A3"] = "Yearly summary"
+    ws["A3"] = _rt("yearly_summary")
     ws["A3"].fill = SUMMARY_FILL
     ws["A3"].font = Font(bold=True, color="1F4E79", size=12)
     ws["A3"].alignment = Alignment(horizontal="center", vertical="center")
@@ -2820,10 +3030,10 @@ def _write_monthly_analysis(wb: Workbook, analysis: dict[str, Any]) -> None:
         highlight_positive_cols=["Unmet_Tons"],
         alternating_fill=ALT_ROW_FILL,
     )
+    _merge_row_span(ws, 3, 1, yearly_layout["end_col"])
 
     monthly_title_row = yearly_layout["end_row"] + 4
-    ws.merge_cells(f"A{monthly_title_row}:H{monthly_title_row}")
-    ws.cell(monthly_title_row, 1).value = "Monthly detail"
+    ws.cell(monthly_title_row, 1).value = _rt("monthly_detail")
     ws.cell(monthly_title_row, 1).fill = SUMMARY_FILL
     ws.cell(monthly_title_row, 1).font = Font(bold=True, color="1F4E79", size=12)
     ws.cell(monthly_title_row, 1).alignment = Alignment(horizontal="center", vertical="center")
@@ -2857,16 +3067,16 @@ def _write_monthly_analysis(wb: Workbook, analysis: dict[str, Any]) -> None:
         freeze=f"A{monthly_title_row + 2}",
         alternating_fill=ALT_ROW_FILL,
     )
+    _merge_row_span(ws, monthly_title_row, 1, monthly_layout["end_col"])
 
     gap_table = monthly_detail.sort_values(["Unmet_Tons", "Demand_Tons"], ascending=[False, False]).head(8)
     gap_title_row = monthly_layout["end_row"] + 3
-    ws.merge_cells(f"A{gap_title_row}:G{gap_title_row}")
-    ws.cell(gap_title_row, 1).value = "Highest gap months"
+    ws.cell(gap_title_row, 1).value = _text("Highest gap months", "缺口最大的月份")
     ws.cell(gap_title_row, 1).fill = SUMMARY_FILL
     ws.cell(gap_title_row, 1).font = Font(bold=True, color="1F4E79", size=12)
     ws.cell(gap_title_row, 1).alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[gap_title_row].height = 22
-    _write_table(
+    gap_layout = _write_table(
         ws,
         gap_table[["Month", "Year", "Demand_Tons", "Internal_Tons", "Outsourced_Tons", "Unmet_Tons", "Service_Level"]],
         start_row=gap_title_row + 1,
@@ -2881,24 +3091,28 @@ def _write_monthly_analysis(wb: Workbook, analysis: dict[str, Any]) -> None:
         highlight_positive_cols=["Unmet_Tons"],
         alternating_fill=ALT_ROW_FILL,
     )
+    _merge_row_span(ws, gap_title_row, 1, gap_layout["end_col"])
+    _sync_sheet_header_width(
+        ws,
+        max(yearly_layout["end_col"], monthly_layout["end_col"], gap_layout["end_col"]),
+    )
     _autofit(ws)
     _set_monthly_trend_column_layout(ws)
 
 
 def _write_bottleneck_analysis(wb: Workbook, analysis: dict[str, Any]) -> None:
-    ws = wb.create_sheet("Bottleneck")
-    _write_sheet_title(ws, "Bottleneck Analysis")
+    ws = wb.create_sheet(_sheet_title("Bottleneck"))
+    _write_sheet_title(ws, _text("Bottleneck Analysis", "瓶颈分析"))
 
     wc_summary = analysis["wc_summary"]
     wc_long = analysis["wc_long"]
 
     if wc_summary.empty or wc_long.empty:
-        ws["A3"] = "No work-center load data is available for this result."
+        ws["A3"] = _text("No work-center load data is available for this result.", "当前结果没有可用的工作中心负载数据。")
         return
 
     top_wc = wc_summary.head(12).copy()
-    ws.merge_cells("A2:F2")
-    ws["A2"] = "Top bottleneck workcenters"
+    ws["A2"] = _rt("top_bottleneck_workcenters")
     ws["A2"].fill = SUMMARY_FILL
     ws["A2"].font = Font(bold=True, color="1F4E79", size=12)
     ws["A2"].alignment = Alignment(horizontal="center", vertical="center")
@@ -2916,11 +3130,11 @@ def _write_bottleneck_analysis(wb: Workbook, analysis: dict[str, Any]) -> None:
         alternating_fill=ALT_ROW_FILL,
         freeze="A4",
     )
+    _merge_row_span(ws, 2, 1, top_layout["end_col"])
 
     focus_wc = str(top_wc.iloc[0]["WorkCenter"])
     focus_title_row = top_layout["end_row"] + 3
-    ws.merge_cells(f"A{focus_title_row}:C{focus_title_row}")
-    ws.cell(focus_title_row, 1).value = f"Focused workcenter: {focus_wc}"
+    ws.cell(focus_title_row, 1).value = _text(f"Focused workcenter: {focus_wc}", f"重点工作中心：{focus_wc}")
     ws.cell(focus_title_row, 1).fill = SUMMARY_FILL
     ws.cell(focus_title_row, 1).font = Font(bold=True, color="1F4E79", size=12)
     ws.cell(focus_title_row, 1).alignment = Alignment(horizontal="center", vertical="center")
@@ -2935,9 +3149,10 @@ def _write_bottleneck_analysis(wb: Workbook, analysis: dict[str, Any]) -> None:
         num_formats={"LoadPct": PCT_FMT},
         alternating_fill=ALT_ROW_FILL,
     )
+    _merge_row_span(ws, focus_title_row, 1, line_layout["end_col"])
     wc_line_chart = LineChart()
-    wc_line_chart.title = f"{focus_wc} Pressure Load Trend"
-    wc_line_chart.y_axis.title = "Pressure load"
+    wc_line_chart.title = _text(f"{focus_wc} Pressure Load Trend", f"{focus_wc} 压力负载趋势")
+    wc_line_chart.y_axis.title = _text("Pressure load", "压力负载")
     wc_line_chart.height = 9
     wc_line_chart.width = 16
     wc_line_chart.add_data(
@@ -2960,7 +3175,7 @@ def _write_bottleneck_analysis(wb: Workbook, analysis: dict[str, Any]) -> None:
     wc_line_chart.y_axis.numFmt = PCT_FMT
     chart_title_row = line_layout["end_row"] + 3
     ws.merge_cells(f"A{chart_title_row}:H{chart_title_row}")
-    ws.cell(chart_title_row, 1).value = f"{focus_wc} Pressure Load Trend"
+    ws.cell(chart_title_row, 1).value = _text(f"{focus_wc} Pressure Load Trend", f"{focus_wc} 压力负载趋势")
     ws.cell(chart_title_row, 1).fill = SUMMARY_FILL
     ws.cell(chart_title_row, 1).font = Font(bold=True, color="1F4E79", size=12)
     ws.cell(chart_title_row, 1).alignment = Alignment(horizontal="center", vertical="center")
@@ -2970,9 +3185,12 @@ def _write_bottleneck_analysis(wb: Workbook, analysis: dict[str, Any]) -> None:
     _write_note(
         ws,
         f"A{chart_title_row + 19}",
-        "Bottleneck metrics and heatmap percentages are based on internal allocation plus assigned unmet, "
-        "shown against raw nameplate monthly capacity.",
+        _text(
+            "Bottleneck metrics and heatmap percentages are based on internal allocation plus assigned unmet, shown against raw nameplate monthly capacity.",
+            "瓶颈指标和热力图百分比基于内部已分配量加上归属后的未满足量，并相对于原始月度名义产能计算。",
+        ),
     )
+    _sync_sheet_header_width(ws, top_layout["end_col"])
     _autofit(ws)
 
 
@@ -2982,13 +3200,13 @@ def _write_wc_heatmap(
     wc_tons_df: pd.DataFrame,
     months: List[str],
 ) -> None:
-    ws = wb.create_sheet("WC_Heatmap")
-    _write_sheet_title(ws, "WorkCenter Heatmap - Demand and Load%")
+    ws = wb.create_sheet(_sheet_title("WC_Heatmap"))
+    _write_sheet_title(ws, _text("WorkCenter Heatmap - Demand and Load%", "工作中心热力图 - 需求与负载率"))
 
     wc_long = analysis["wc_long"]
     wc_summary = analysis["wc_summary"]
     if (wc_long.empty or wc_summary.empty) and wc_tons_df.empty:
-        ws["A3"] = "No heatmap data is available for this result."
+        ws["A3"] = _text("No heatmap data is available for this result.", "当前结果没有可用的热力图数据。")
         return
 
     ranking_source = wc_summary.copy()
@@ -3011,7 +3229,7 @@ def _write_wc_heatmap(
     )
     yearly_frame = _summarize_heatmap_months_to_years(monthly_frame, months)
 
-    ws["A2"] = "Yearly summary"
+    ws["A2"] = _rt("yearly_summary")
     ws["A2"].font = Font(bold=True, color="1F4E79", size=11)
     yearly_view = _prepare_heatmap_display_frame(yearly_frame, heatmap_wc_names)
     yearly_layout = _write_table(
@@ -3020,10 +3238,11 @@ def _write_wc_heatmap(
         start_row=3,
         start_col=1,
     )
+    _merge_row_span(ws, 2, 1, yearly_layout["end_col"])
     _style_capacity_heatmap_block(ws, yearly_layout, yearly_view)
 
     monthly_start_row = yearly_layout["end_row"] + 4
-    ws.cell(monthly_start_row - 1, 1).value = "Monthly detail"
+    ws.cell(monthly_start_row - 1, 1).value = _rt("monthly_detail")
     ws.cell(monthly_start_row - 1, 1).font = Font(bold=True, color="1F4E79", size=11)
     monthly_view = _prepare_heatmap_display_frame(monthly_frame, heatmap_wc_names)
     monthly_layout = _write_table(
@@ -3032,25 +3251,29 @@ def _write_wc_heatmap(
         start_row=monthly_start_row,
         start_col=1,
     )
+    _merge_row_span(ws, monthly_start_row - 1, 1, monthly_layout["end_col"])
     _style_capacity_heatmap_block(ws, monthly_layout, monthly_view)
     _write_note(
         ws,
         f"A{monthly_layout['end_row'] + 2}",
-        "Demand rows show assigned tons by workcenter. Load% rows show internal allocation plus assigned unmet "
-        "against raw nameplate monthly capacity, so values may exceed 100%.",
+        _text(
+            "Demand rows show assigned tons by workcenter. Load% rows show internal allocation plus assigned unmet against raw nameplate monthly capacity, so values may exceed 100%.",
+            "Demand 行显示归属到工作中心的吨位；Load% 行显示内部已分配量加归属后的未满足量相对于原始月度名义产能的比例，因此数值可能超过 100%。",
+        ),
     )
+    _sync_sheet_header_width(ws, max(yearly_layout["end_col"], monthly_layout["end_col"]))
     _autofit(ws)
 
 
 def _write_product_risk_analysis(wb: Workbook, analysis: dict[str, Any]) -> None:
-    ws = wb.create_sheet("Product_Risk")
-    _write_sheet_title(ws, "Product Risk")
+    ws = wb.create_sheet(_sheet_title("Product_Risk"))
+    _write_sheet_title(ws, _text("Product Risk", "产品风险"))
     _prepare_product_risk_sheet(ws)
 
     product_summary = analysis["product_summary"]
 
     if product_summary.empty:
-        ws["A3"] = "No product risk view is available for this result."
+        ws["A3"] = _text("No product risk view is available for this result.", "当前结果没有可用的产品风险视图。")
         return
 
     top_products = product_summary.head(20).copy()
@@ -3093,24 +3316,29 @@ def _write_product_risk_analysis(wb: Workbook, analysis: dict[str, Any]) -> None
             "Supplied_Tons",
         ],
     )
+    _merge_row_span(ws, 1, 1, layout["end_col"])
     _autofit(ws)
     _set_product_risk_column_layout(ws)
 
 
 def _write_planner_summary(wb: Workbook, analysis: dict[str, Any]) -> None:
-    ws = wb.create_sheet("Planner_Result_Summary")
+    ws = wb.create_sheet(_sheet_title("Planner_Result_Summary"))
     scenario = analysis.get("scenario_name") or "N/A"
+    scenario_label = localize_value(_lang(), scenario)
     mode_name = analysis.get("mode_name") or "Mode"
     _prepare_planner_summary_sheet(
         ws,
-        title="Planner Result Summary",
-        subtitle=f"Scenario: {scenario} | Mode: {mode_name} | Risk-first planner roll-up.",
+        title=_text("Planner Result Summary", "计划员结果汇总"),
+        subtitle=_text(
+            f"Scenario: {scenario} | Mode: {mode_name} | Risk-first planner roll-up.",
+            f"场景：{scenario_label} | 模式：{localize_mode(_lang(), mode_name)} | 以风险优先顺序汇总各计划员结果。",
+        ),
         compare_mode=False,
     )
 
     planner_summary = analysis.get("planner_summary", pd.DataFrame())
     if planner_summary.empty:
-        ws["A3"] = "No planner summary is available for this result."
+        ws["A3"] = _text("No planner summary is available for this result.", "当前结果没有可用的计划员汇总数据。")
         return
 
     display_columns = [
@@ -3147,19 +3375,22 @@ def _write_planner_summary(wb: Workbook, analysis: dict[str, Any]) -> None:
     _write_note(
         ws,
         f"A{layout['end_row'] + 2}",
-        "This sheet shows planner-level traceability after the product-month optimization result is split back to planner shares.",
+        _text(
+            "This sheet shows planner-level traceability after the product-month optimization result is split back to planner shares.",
+            "该表展示将产品-月份层级的优化结果按 planner 份额拆回后的计划员级追溯结果。",
+        ),
     )
     _autofit(ws)
     _set_planner_summary_column_layout(ws, compare_mode=False)
 
 
 def _write_planner_product_month_summary(wb: Workbook, analysis: dict[str, Any]) -> None:
-    ws = wb.create_sheet("Planner_Product_Month")
-    _write_sheet_title(ws, "Planner Product Month Summary")
+    ws = wb.create_sheet(_sheet_title("Planner_Product_Month"))
+    _write_sheet_title(ws, _text("Planner Product Month Summary", "计划员-产品-月份汇总"))
 
     planner_product_month = analysis.get("planner_product_month_summary", pd.DataFrame())
     if planner_product_month.empty:
-        ws["A3"] = "No planner product-month summary is available for this result."
+        ws["A3"] = _text("No planner product-month summary is available for this result.", "当前结果没有可用的计划员-产品-月份汇总数据。")
         return
 
     layout = _write_table(
@@ -3194,13 +3425,16 @@ def _write_planner_product_month_summary(wb: Workbook, analysis: dict[str, Any])
     _write_note(
         ws,
         f"A{layout['end_row'] + 2}",
-        "Use this sheet when you need to trace a planner's monthly demand into internal, outsourced, and unmet outcomes.",
+        _text(
+            "Use this sheet when you need to trace a planner's monthly demand into internal, outsourced, and unmet outcomes.",
+            "当需要追溯某位 planner 的月度需求最终如何分解为内部供应、外协和未满足结果时，请使用此表。",
+        ),
     )
     _autofit(ws)
 
 
 def _write_detail(wb: Workbook, df: pd.DataFrame) -> None:
-    ws = wb.create_sheet("Allocation_Detail")
+    ws = wb.create_sheet(_sheet_title("Allocation_Detail"))
     detail_df = _reorder_detail_columns(df)
     has_capacity_basis = "Capacity_Basis" in detail_df.columns
     freeze_col_index = len(
@@ -3209,7 +3443,10 @@ def _write_detail(wb: Workbook, df: pd.DataFrame) -> None:
     freeze_panes = f"{get_column_letter(freeze_col_index)}4"
     _prepare_allocation_detail_sheet(
         ws,
-        subtitle="Planner traceability detail by month, product, allocation type, and workcenter.",
+        subtitle=_text(
+            "Planner traceability detail by month, product, allocation type, and workcenter.",
+            "按月份、产品、分配类型和工作中心展示的 planner 可追溯明细。",
+        ),
         freeze_panes=freeze_panes,
         has_capacity_basis=has_capacity_basis,
     )
@@ -3224,6 +3461,8 @@ def _write_detail(wb: Workbook, df: pd.DataFrame) -> None:
             "Outsourced_Tons": TONS_FMT,
             "Unmet_Tons": TONS_FMT,
             "CapacityShare_Pct": PCT_FMT,
+            "Residual_After_Capacity_Tons": TONS_FMT,
+            "Residual_After_Routing_Tons": TONS_FMT,
         },
         freeze=freeze_panes,
         alternating_fill=ALT_ROW_FILL,
@@ -3231,8 +3470,92 @@ def _write_detail(wb: Workbook, df: pd.DataFrame) -> None:
     _set_allocation_detail_column_layout(ws, has_capacity_basis=has_capacity_basis)
 
 
+def _concat_tagged_frames(
+    tagged_frames: list[tuple[str, str, pd.DataFrame]],
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for tag_column, tag_value, frame in tagged_frames:
+        tagged = frame.copy()
+        if tag_column in tagged.columns:
+            tagged[tag_column] = tag_value
+        else:
+            tagged.insert(0, tag_column, tag_value)
+        frames.append(tagged)
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _write_unmet_attribution_detail(wb: Workbook, df: pd.DataFrame) -> None:
+    ws = wb.create_sheet(_sheet_title("Unmet_Attribution_Detail"))
+    detail_df = _reorder_unmet_attribution_columns(df)
+    header_end_col = get_column_letter(max(len(detail_df.columns), 1))
+    _prepare_unmet_attribution_sheet(
+        ws,
+        subtitle=_text(
+            "Trace final unmet demand back to the workcenter used on the pressure reports. ModeA uses planner owner workcenters; ModeB uses baseline capacity workcenters.",
+            "用本表追踪最终未满足需求在压力报表中被回挂到哪个工作中心。模式A按计划员归属工作中心回挂，模式B回到基础产能工作中心。",
+        ),
+        header_end_col=header_end_col,
+    )
+    layout = _write_table(
+        ws,
+        detail_df,
+        start_row=3,
+        start_col=1,
+        num_formats={
+            "Reference_Demand_Tons": TONS_FMT,
+            "Product_Unmet_Tons": TONS_FMT,
+            "Attributed_Unmet_Tons": TONS_FMT,
+        },
+        alternating_fill=ALT_ROW_FILL,
+    )
+    _set_unmet_attribution_column_layout(ws, list(detail_df.columns))
+    if detail_df.empty:
+        _write_note(
+            ws,
+            "A5",
+            _text(
+                "No final unmet attribution rows exist for this result.",
+                "\u5f53\u524d\u7ed3\u679c\u4e0d\u5b58\u5728\u9700\u8981\u56de\u6302\u7684\u6700\u7ec8\u672a\u6ee1\u8db3\u8bb0\u5f55\u3002",
+            ),
+        )
+    else:
+        _write_note(
+            ws,
+            f"A{layout['end_row'] + 2}",
+            _text(
+                "Only final unmet attribution is listed here. Internal reroute and outsourced rows remain on Allocation_Detail.",
+                "本页仅列出最终未满足的回挂明细。内部重分配和外协记录仍保留在分配明细中。",
+            ),
+        )
+
+
+def _reorder_unmet_attribution_columns(df: pd.DataFrame) -> pd.DataFrame:
+    preferred = [
+        "Capacity_Basis",
+        "Mode",
+        "Month",
+        "PlannerName",
+        "Product",
+        "ProductFamily",
+        "Plant",
+        "Owner_WorkCenter",
+        "Capacity_Candidate_WorkCenters",
+        "Attributed_WorkCenter",
+        "Reference_Demand_Tons",
+        "Product_Unmet_Tons",
+        "Attributed_Unmet_Tons",
+        "Attribution_Rule",
+    ]
+    ordered = [column for column in preferred if column in df.columns]
+    trailing = [column for column in df.columns if column not in ordered]
+    return df[ordered + trailing].copy()
+
+
 def _write_allocation_summary(wb: Workbook, df: pd.DataFrame, months: List[str]) -> None:
-    ws = wb.create_sheet("Allocation_Summary")
+    ws = wb.create_sheet(_sheet_title("Allocation_Summary"))
     internal_df = df[df["AllocationType"] == "Internal"]
     if internal_df.empty:
         ws["A1"] = "No data"
@@ -3259,7 +3582,7 @@ def _write_outsource_summary(wb: Workbook, df: pd.DataFrame, months: List[str]) 
     outsource_df = df[df["AllocationType"] == "Outsourced"]
     if outsource_df.empty:
         return
-    ws = wb.create_sheet("Outsource_Summary")
+    ws = wb.create_sheet(_sheet_title("Outsource_Summary"))
 
     index_cols = ["Product", "ProductFamily", "Plant"]
     if "Capacity_Basis" in outsource_df.columns:
@@ -3286,7 +3609,7 @@ def _write_outsource_summary(wb: Workbook, df: pd.DataFrame, months: List[str]) 
 
 
 def _write_unmet_summary(wb: Workbook, df: pd.DataFrame, months: List[str]) -> None:
-    ws = wb.create_sheet("Unmet_Summary")
+    ws = wb.create_sheet(_sheet_title("Unmet_Summary"))
     if df.empty:
         ws["A1"] = "No data"
         return
@@ -3319,7 +3642,7 @@ def _write_binary_report(
     months: List[str],
     toller_products: set,
 ) -> None:
-    ws = wb.create_sheet("Binary_Feasibility")
+    ws = wb.create_sheet(_sheet_title("Binary_Feasibility"))
     if df.empty:
         ws["A1"] = "No data"
         return
@@ -3386,7 +3709,7 @@ def _write_binary_report(
 
 
 def _write_validation(wb: Workbook, issues: List[ValidationIssue]) -> None:
-    ws = wb.create_sheet("Validation_Issues")
+    ws = wb.create_sheet(_sheet_title("Validation_Issues"))
     if not issues:
         _write_table(ws, pd.DataFrame([{"Severity": "OK", "Check": "Validation", "Detail": "No issues found."}]))
         ws["A2"].fill = OK_FILL
@@ -3409,14 +3732,14 @@ def _write_validation(wb: Workbook, issues: List[ValidationIssue]) -> None:
 
 
 def _write_run_info(wb: Workbook, run_info_df: pd.DataFrame) -> None:
-    ws = wb.create_sheet("Run_Info")
+    ws = wb.create_sheet(_sheet_title("Run_Info"))
     _write_table(ws, run_info_df)
     _autofit(ws)
     ws.sheet_state = "hidden"
 
 
 def _write_sheet_title(ws, title: str) -> None:
-    ws["A1"] = title
+    ws["A1"] = localize_value(_lang(), title)
     ws["A1"].font = TITLE_FONT
 
 
@@ -3435,19 +3758,18 @@ def _prepare_dashboard_sheet(ws, title: str, subtitle: str) -> None:
     ws.sheet_view.showGridLines = False
     _set_dashboard_column_layout(ws)
     ws.merge_cells("A1:T1")
-    ws["A1"] = title
+    ws["A1"] = localize_value(_lang(), title)
     ws["A1"].fill = HDR_FILL
     ws["A1"].font = Font(color="FFFFFF", bold=True, size=18)
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[1].height = 30
 
     ws.merge_cells("A2:T2")
-    ws["A2"] = subtitle
+    ws["A2"] = localize_value(_lang(), subtitle)
     ws["A2"].fill = SUMMARY_FILL
     ws["A2"].font = Font(color="44546A", bold=True, size=11)
     ws["A2"].alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     ws.row_dimensions[2].height = 24
-    ws.freeze_panes = "A3"
 
 
 def _write_single_kpi_card(
@@ -3465,7 +3787,7 @@ def _write_single_kpi_card(
         f"{ws.cell(top_row, left_col).coordinate}:{ws.cell(top_row, right_col).coordinate}"
     )
     title_cell = ws.cell(top_row, left_col)
-    title_cell.value = title
+    title_cell.value = localize_value(_lang(), title)
     title_cell.fill = title_fill
     title_cell.font = Font(color="FFFFFF", bold=True, size=12)
     title_cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -3507,7 +3829,7 @@ def _write_compare_kpi_card(
         f"{ws.cell(top_row, left_col).coordinate}:{ws.cell(top_row, right_col).coordinate}"
     )
     title_cell = ws.cell(top_row, left_col)
-    title_cell.value = title
+    title_cell.value = localize_value(_lang(), title)
     title_cell.fill = title_fill
     title_cell.font = Font(color="FFFFFF", bold=True, size=12)
     title_cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -3523,7 +3845,7 @@ def _write_compare_kpi_card(
             f"{ws.cell(top_row + 1, start_col).coordinate}:{ws.cell(top_row + 1, end_col).coordinate}"
         )
         label_cell = ws.cell(top_row + 1, start_col)
-        label_cell.value = label
+        label_cell.value = localize_value(_lang(), label)
         label_cell.fill = fill
         label_cell.font = Font(color="1F1F1F", bold=True, size=10)
         label_cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -3557,8 +3879,8 @@ def _write_metric_block(
     for offset, (label, value, fmt) in enumerate(rows, start=1):
         label_cell = ws.cell(start_row + offset, start_col)
         value_cell = ws.cell(start_row + offset, start_col + 1)
-        label_cell.value = label
-        value_cell.value = value
+        label_cell.value = localize_value(_lang(), label)
+        value_cell.value = localize_value(_lang(), value)
         label_cell.font = Font(bold=True)
         label_cell.fill = SUBHDR_FILL
         for cell in (label_cell, value_cell):
@@ -3568,21 +3890,101 @@ def _write_metric_block(
 
 
 def _write_note(ws, cell_ref: str, text: str) -> None:
-    ws[cell_ref] = text
+    ws[cell_ref] = localize_value(_lang(), text)
     ws[cell_ref].font = NOTE_FONT
     ws[cell_ref].alignment = Alignment(wrap_text=True, vertical="top")
+
+
+def _to_col_index(column: int | str) -> int:
+    if isinstance(column, int):
+        return column
+    return column_index_from_string(str(column))
+
+
+def _merge_row_span(ws, row: int, start_col: int | str, end_col: int | str) -> None:
+    start_idx = _to_col_index(start_col)
+    end_idx = _to_col_index(end_col)
+    if end_idx < start_idx:
+        start_idx, end_idx = end_idx, start_idx
+
+    for merged_range in list(ws.merged_cells.ranges):
+        if merged_range.min_row == row and merged_range.max_row == row:
+            if merged_range.max_col < start_idx or merged_range.min_col > end_idx:
+                continue
+            ws.unmerge_cells(str(merged_range))
+
+    if end_idx > start_idx:
+        ws.merge_cells(
+            f"{get_column_letter(start_idx)}{row}:{get_column_letter(end_idx)}{row}"
+        )
+
+
+def _sync_sheet_header_width(ws, end_col: int | str) -> None:
+    _merge_row_span(ws, 1, 1, end_col)
+    if ws["A2"].value is not None:
+        _merge_row_span(ws, 2, 1, end_col)
+
+
+def _build_excel_table_name(ws, start_row: int, start_col: int) -> str:
+    workbook = ws.parent
+    existing_names = set()
+    for sheet in workbook.worksheets:
+        existing_names.update(name.casefold() for name in getattr(sheet, "tables", {}).keys())
+
+    base_title = re.sub(r"[^A-Za-z0-9_]", "_", str(ws.title or "Sheet"))
+    base_title = re.sub(r"_+", "_", base_title).strip("_")
+    if not base_title:
+        base_title = "Sheet"
+    if base_title[0].isdigit():
+        base_title = f"T_{base_title}"
+
+    base_name = f"{base_title}_{start_row}_{start_col}"
+    candidate = base_name
+    suffix = 1
+    while candidate.casefold() in existing_names:
+        suffix += 1
+        candidate = f"{base_name}_{suffix}"
+    return candidate
+
+
+def _add_excel_table(
+    ws,
+    start_row: int,
+    end_row: int,
+    start_col: int,
+    end_col: int,
+) -> None:
+    if end_row <= start_row or end_col < start_col:
+        return
+
+    ref = (
+        f"{get_column_letter(start_col)}{start_row}:"
+        f"{get_column_letter(end_col)}{end_row}"
+    )
+    table = Table(
+        displayName=_build_excel_table_name(ws, start_row, start_col),
+        ref=ref,
+    )
+    table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium2",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=False,
+        showColumnStripes=False,
+    )
+    ws.add_table(table)
 
 
 def _write_dashboard_validation_block(
     ws,
     issues: List[ValidationIssue],
     start_row: int,
-    title: str = "Data Validation / Issues",
+    title: str | None = None,
 ) -> None:
     if not issues:
         ws.merge_cells(f"A{start_row}:T{start_row}")
         ok_cell = ws[f"A{start_row}"]
-        ok_cell.value = "Validation Status: OK - No data issues found."
+        ok_cell.value = _rt("validation_status_ok")
         ok_cell.fill = OK_FILL
         ok_cell.font = Font(bold=True, color="1F1F1F", size=11)
         ok_cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -3593,7 +3995,7 @@ def _write_dashboard_validation_block(
 
     ws.merge_cells(f"A{start_row}:T{start_row}")
     title_cell = ws[f"A{start_row}"]
-    title_cell.value = title
+    title_cell.value = title or _rt("validation_status_title")
     title_cell.fill = SUMMARY_FILL
     title_cell.font = Font(bold=True, color="1F4E79", size=12)
     title_cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -3610,14 +4012,14 @@ def _write_dashboard_validation_block(
         fill = ERR_FILL if severity == "ERROR" else WARN_FILL
 
         severity_cell = ws.cell(row_num, 1)
-        severity_cell.value = severity
+        severity_cell.value = localize_value(_lang(), severity)
         severity_cell.fill = fill
         severity_cell.font = Font(bold=True, size=10)
         severity_cell.alignment = Alignment(horizontal="center", vertical="center")
         severity_cell.border = BORDER
 
         check_cell = ws.cell(row_num, 2)
-        check_cell.value = issue.check
+        check_cell.value = localize_value(_lang(), issue.check)
         check_cell.fill = fill
         check_cell.font = Font(size=10)
         check_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -3625,7 +4027,7 @@ def _write_dashboard_validation_block(
 
         ws.merge_cells(f"C{row_num}:T{row_num}")
         detail_cell = ws.cell(row_num, 3)
-        detail_cell.value = issue.detail
+        detail_cell.value = localize_value(_lang(), issue.detail)
         detail_cell.fill = fill
         detail_cell.font = Font(size=10)
         detail_cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
@@ -3705,17 +4107,17 @@ def _set_monthly_trend_column_layout(ws) -> None:
         ws.column_dimensions[column].width = width
 
 
-def _prepare_monthly_trend_sheet(ws, subtitle: str) -> None:
+def _prepare_monthly_trend_sheet(ws, subtitle: str, header_end_col: str = "T") -> None:
     ws.sheet_view.showGridLines = False
     _set_monthly_trend_column_layout(ws)
-    ws.merge_cells("A1:T1")
+    ws.merge_cells(f"A1:{header_end_col}1")
     ws["A1"] = ws["A1"].value
     ws["A1"].fill = HDR_FILL
     ws["A1"].font = Font(color="FFFFFF", bold=True, size=18)
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[1].height = 30
-    ws.merge_cells("A2:T2")
-    ws["A2"] = subtitle
+    ws.merge_cells(f"A2:{header_end_col}2")
+    ws["A2"] = localize_value(_lang(), subtitle)
     ws["A2"].fill = SUMMARY_FILL
     ws["A2"].font = Font(color="44546A", bold=True, size=11)
     ws["A2"].alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -3784,7 +4186,6 @@ def _set_product_risk_column_layout(ws) -> None:
 def _prepare_product_risk_sheet(ws) -> None:
     ws.sheet_view.showGridLines = False
     _set_product_risk_column_layout(ws)
-    ws.freeze_panes = "A4"
 
 
 def _apply_risk_priority_headers(
@@ -3845,7 +4246,6 @@ def _prepare_planner_summary_sheet(ws, title: str, subtitle: str, compare_mode: 
     ws["A2"].font = Font(color="44546A", bold=True, size=11)
     ws["A2"].alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     ws.row_dimensions[2].height = 24
-    ws.freeze_panes = "A4"
 
 
 def _set_allocation_detail_column_layout(ws, has_capacity_basis: bool) -> None:
@@ -3865,6 +4265,9 @@ def _set_allocation_detail_column_layout(ws, has_capacity_basis: bool) -> None:
         "M": 14,
         "N": 14,
         "O": 10,
+        "P": 18,
+        "Q": 18,
+        "R": 18,
     }
     if not has_capacity_basis:
         widths = {
@@ -3882,6 +4285,9 @@ def _set_allocation_detail_column_layout(ws, has_capacity_basis: bool) -> None:
             "L": 14,
             "M": 14,
             "N": 10,
+            "O": 18,
+            "P": 18,
+            "Q": 18,
         }
     for column, width in widths.items():
         ws.column_dimensions[column].width = width
@@ -3890,20 +4296,58 @@ def _set_allocation_detail_column_layout(ws, has_capacity_basis: bool) -> None:
 def _prepare_allocation_detail_sheet(ws, subtitle: str, freeze_panes: str, has_capacity_basis: bool) -> None:
     ws.sheet_view.showGridLines = False
     _set_allocation_detail_column_layout(ws, has_capacity_basis=has_capacity_basis)
-    ws.merge_cells("A1:O1" if has_capacity_basis else "A1:N1")
-    ws["A1"] = "Allocation Detail"
+    end_col = "R" if has_capacity_basis else "Q"
+    ws.merge_cells(f"A1:{end_col}1")
+    ws["A1"] = _sheet_title("Allocation_Detail")
     ws["A1"].fill = HDR_FILL
     ws["A1"].font = Font(color="FFFFFF", bold=True, size=18)
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[1].height = 30
 
-    ws.merge_cells("A2:O2" if has_capacity_basis else "A2:N2")
-    ws["A2"] = subtitle
+    ws.merge_cells(f"A2:{end_col}2")
+    ws["A2"] = localize_value(_lang(), subtitle)
     ws["A2"].fill = SUMMARY_FILL
     ws["A2"].font = Font(color="44546A", bold=True, size=11)
     ws["A2"].alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     ws.row_dimensions[2].height = 24
-    ws.freeze_panes = freeze_panes
+
+
+def _prepare_unmet_attribution_sheet(ws, subtitle: str, header_end_col: str) -> None:
+    ws.sheet_view.showGridLines = False
+    ws.merge_cells(f"A1:{header_end_col}1")
+    ws["A1"] = _sheet_title("Unmet_Attribution_Detail")
+    ws["A1"].fill = HDR_FILL
+    ws["A1"].font = Font(color="FFFFFF", bold=True, size=18)
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 30
+
+    ws.merge_cells(f"A2:{header_end_col}2")
+    ws["A2"] = localize_value(_lang(), subtitle)
+    ws["A2"].fill = SUMMARY_FILL
+    ws["A2"].font = Font(color="44546A", bold=True, size=11)
+    ws["A2"].alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.row_dimensions[2].height = 32
+
+
+def _set_unmet_attribution_column_layout(ws, columns: list[str]) -> None:
+    width_by_column = {
+        "Capacity_Basis": 14,
+        "Mode": 12,
+        "Month": 12,
+        "PlannerName": 16,
+        "Product": 16,
+        "ProductFamily": 18,
+        "Plant": 12,
+        "Owner_WorkCenter": 22,
+        "Capacity_Candidate_WorkCenters": 30,
+        "Attributed_WorkCenter": 22,
+        "Reference_Demand_Tons": 16,
+        "Product_Unmet_Tons": 16,
+        "Attributed_Unmet_Tons": 18,
+        "Attribution_Rule": 28,
+    }
+    for index, column_name in enumerate(columns, start=1):
+        ws.column_dimensions[get_column_letter(index)].width = width_by_column.get(column_name, 16)
 
 
 def _reorder_detail_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -3921,6 +4365,9 @@ def _reorder_detail_columns(df: pd.DataFrame) -> pd.DataFrame:
         "Outsourced_Tons",
         "Unmet_Tons",
         "CapacityShare_Pct",
+        "Allocation_Source",
+        "Residual_After_Capacity_Tons",
+        "Residual_After_Routing_Tons",
         "RouteType",
         "Priority",
     ]
@@ -3932,7 +4379,7 @@ def _reorder_detail_columns(df: pd.DataFrame) -> pd.DataFrame:
 def _write_header_row(ws, headers: list[str], start_row: int = 1, start_col: int = 1) -> None:
     for index, header in enumerate(headers):
         cell = ws.cell(start_row, start_col + index)
-        cell.value = header
+        cell.value = localize_column_name(_lang(), header)
         cell.font = HDR_FONT
         cell.fill = HDR_FILL
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -3951,6 +4398,8 @@ def _write_table(
     highlight_positive_cols: Optional[list[str]] = None,
     highlight_over_100_pct: Optional[list[str]] = None,
     alternating_fill: Optional[PatternFill] = None,
+    localize_cells: bool = True,
+    add_excel_table: bool = True,
 ) -> dict[str, Any]:
     num_formats = num_formats or {}
     tons_cols = tons_cols or []
@@ -3974,7 +4423,10 @@ def _write_table(
         row_num = start_row + row_offset
         for header, value in zip(headers, row):
             cell = ws.cell(row_num, col_index[header])
-            cell.value = value if not _is_nan(value) else None
+            if _is_nan(value):
+                cell.value = None
+            else:
+                cell.value = localize_value(_lang(), value) if localize_cells else value
             cell.border = BORDER
             if alternating_fill and row_offset % 2 == 0:
                 cell.fill = alternating_fill
@@ -3992,8 +4444,10 @@ def _write_table(
 
     end_row = start_row + len(df)
     end_col = start_col + len(headers) - 1
-    if freeze:
-        ws.freeze_panes = freeze
+    if add_excel_table:
+        _add_excel_table(ws, start_row, end_row, start_col, end_col)
+    # Report workbooks no longer use frozen panes. Keep the parameter for
+    # call-site compatibility, but intentionally ignore it here.
     return {
         "start_row": start_row,
         "end_row": end_row,

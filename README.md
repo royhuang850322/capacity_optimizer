@@ -1,6 +1,17 @@
-# Chemical Capacity Optimizer
+# Capacity Optimizer
 
-化工产能优化工具，当前版本采用：
+## Technical References
+
+- [Technical Reference (CN)](/C:/Users/super/capacity_optimizer/docs/TECHNICAL_REFERENCE_CN.md)
+- [Developer Guide](/C:/Users/super/capacity_optimizer/docs/developer_guide.md)
+- [User Guide](/C:/Users/super/capacity_optimizer/docs/user_guide.md)
+
+## Handoff
+
+- [Project Handoff (CN)](/C:/Users/super/capacity_optimizer/docs/PROJECT_HANDOFF_CN.md)
+- [Handoff Checklist (CN)](/C:/Users/super/capacity_optimizer/docs/HANDOFF_CHECKLIST_CN.md)
+
+产能优化工具，当前版本采用：
 - `CSV / Excel` 作为输入数据
 - `Python + OR-Tools` 作为运算逻辑
 - `Excel` 作为用户控制面板和结果报告载体
@@ -83,7 +94,6 @@ Tooling Control Panel/Capacity_Optimizer_Control.xlsx
 - `Start_Month_Num`
 - `Horizon_Months`
 - `Run_Mode`
-- `Direct_Mode`
 - `Verbose`
 - `Skip_Validation_Errors`
 

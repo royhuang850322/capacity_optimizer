@@ -47,6 +47,22 @@ def resolve_runtime_paths() -> RuntimePaths:
     install_dir = _resolve_install_dir(frozen)
     bundled_resources_dir = _resolve_bundled_resources_dir(install_dir, frozen)
     user_workspace_dir = _resolve_user_workspace_dir(install_dir, frozen)
+    return build_runtime_paths(
+        install_dir=install_dir,
+        bundled_resources_dir=bundled_resources_dir,
+        user_workspace_dir=user_workspace_dir,
+        frozen=frozen,
+    )
+
+
+def build_runtime_paths(
+    *,
+    install_dir: Path,
+    bundled_resources_dir: Path,
+    user_workspace_dir: Path,
+    frozen: bool,
+) -> RuntimePaths:
+    user_workspace_dir = Path(user_workspace_dir).expanduser().resolve()
 
     bundled_docs_dir = bundled_resources_dir / "docs"
     templates_dir = user_workspace_dir / "Tooling Control Panel"
@@ -78,6 +94,15 @@ def resolve_runtime_paths() -> RuntimePaths:
         control_workbook_path=control_workbook_path,
         sample_data_dir=sample_data_dir,
         is_frozen=frozen,
+    )
+
+
+def with_workspace_dir(paths: RuntimePaths, workspace_dir: str | Path) -> RuntimePaths:
+    return build_runtime_paths(
+        install_dir=paths.app_install_dir,
+        bundled_resources_dir=paths.bundled_resources_dir,
+        user_workspace_dir=Path(workspace_dir),
+        frozen=paths.is_frozen,
     )
 
 
@@ -126,8 +151,6 @@ def _resolve_user_workspace_dir(install_dir: Path, frozen: bool) -> Path:
     if not frozen:
         return install_dir
 
-    local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-    if local_appdata:
-        return Path(local_appdata) / APP_NAME
-
-    return Path.home() / f".{APP_NAME}"
+    # Frozen/packaged mode: use install directory as workspace
+    # All user data (licenses, Data_Input, output, logs) will be created alongside the exe
+    return install_dir

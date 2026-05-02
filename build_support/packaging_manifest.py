@@ -6,17 +6,27 @@ requiring PyInstaller to be installed.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 
-APP_NAME = "CapacityOptimizer"
-ENTRY_SCRIPT = "CapacityOptimizerLauncher.pyw"
+@dataclass(frozen=True)
+class PackagingTarget:
+    target_id: str
+    app_name: str
+    entry_script: str
+    resource_dir_mappings: tuple[tuple[str, str], ...]
+    resource_file_mappings: tuple[tuple[str, str], ...]
+    hidden_import_packages: tuple[str, ...]
+    dynamic_lib_packages: tuple[str, ...]
+    metadata_packages: tuple[str, ...]
 
-RESOURCE_DIR_MAPPINGS = (
+
+_COMMON_RESOURCE_DIR_MAPPINGS = (
     ("Data_Input", "resources/Data_Input"),
 )
 
-RESOURCE_FILE_MAPPINGS = (
+_COMMON_RESOURCE_FILE_MAPPINGS = (
     ("README.md", "resources/docs"),
     ("LICENSE", "resources/docs"),
     ("docs/CUSTOMER_LICENSE_QUICKSTART_CN.md", "resources/docs"),
@@ -26,15 +36,15 @@ RESOURCE_FILE_MAPPINGS = (
     ("docs/PYTHON_INSTALL_GUIDE_CN.md", "resources/docs"),
 )
 
-HIDDEN_IMPORT_PACKAGES = (
+_COMMON_HIDDEN_IMPORT_PACKAGES = (
     "ortools",
 )
 
-DYNAMIC_LIB_PACKAGES = (
+_COMMON_DYNAMIC_LIB_PACKAGES = (
     "ortools",
 )
 
-METADATA_PACKAGES = (
+_COMMON_METADATA_PACKAGES = (
     "ortools",
     "pandas",
     "openpyxl",
@@ -43,17 +53,62 @@ METADATA_PACKAGES = (
     "cryptography",
 )
 
+DEFAULT_TARGET_ID = "capacity_optimizer"
 
-def iter_data_mappings(project_root: Path) -> list[tuple[str, str]]:
+TARGETS: dict[str, PackagingTarget] = {
+    "capacity_optimizer": PackagingTarget(
+        target_id="capacity_optimizer",
+        app_name="CapacityOptimizer",
+        entry_script="CapacityOptimizerLauncher.pyw",
+        resource_dir_mappings=_COMMON_RESOURCE_DIR_MAPPINGS,
+        resource_file_mappings=_COMMON_RESOURCE_FILE_MAPPINGS,
+        hidden_import_packages=_COMMON_HIDDEN_IMPORT_PACKAGES,
+        dynamic_lib_packages=_COMMON_DYNAMIC_LIB_PACKAGES,
+        metadata_packages=_COMMON_METADATA_PACKAGES,
+    ),
+    "modeb_product_analysis": PackagingTarget(
+        target_id="modeb_product_analysis",
+        app_name="ModeBProductAnalysis",
+        entry_script="ModeBProductAnalysisLauncher.pyw",
+        resource_dir_mappings=_COMMON_RESOURCE_DIR_MAPPINGS,
+        resource_file_mappings=_COMMON_RESOURCE_FILE_MAPPINGS,
+        hidden_import_packages=_COMMON_HIDDEN_IMPORT_PACKAGES,
+        dynamic_lib_packages=_COMMON_DYNAMIC_LIB_PACKAGES,
+        metadata_packages=_COMMON_METADATA_PACKAGES,
+    ),
+}
+
+
+def get_target(target_id: str = DEFAULT_TARGET_ID) -> PackagingTarget:
+    try:
+        return TARGETS[target_id]
+    except KeyError as exc:
+        valid = ", ".join(sorted(TARGETS))
+        raise KeyError(f"Unknown packaging target '{target_id}'. Valid targets: {valid}") from exc
+
+
+def iter_data_mappings(project_root: Path, *, target_id: str = DEFAULT_TARGET_ID) -> list[tuple[str, str]]:
+    target = get_target(target_id)
     mappings: list[tuple[str, str]] = []
-    for relative_source, target_dir in RESOURCE_DIR_MAPPINGS:
+    for relative_source, target_dir in target.resource_dir_mappings:
         source_path = project_root / relative_source
         if not source_path.exists():
             raise FileNotFoundError(f"Required packaging resource directory not found: {source_path}")
         mappings.append((str(source_path), target_dir))
-    for relative_source, target_dir in RESOURCE_FILE_MAPPINGS:
+    for relative_source, target_dir in target.resource_file_mappings:
         source_path = project_root / relative_source
         if not source_path.exists():
             raise FileNotFoundError(f"Required packaging resource file not found: {source_path}")
         mappings.append((str(source_path), target_dir))
     return mappings
+
+
+# Backward-compatible aliases for the default/main application target.
+_DEFAULT_TARGET = get_target(DEFAULT_TARGET_ID)
+APP_NAME = _DEFAULT_TARGET.app_name
+ENTRY_SCRIPT = _DEFAULT_TARGET.entry_script
+RESOURCE_DIR_MAPPINGS = _DEFAULT_TARGET.resource_dir_mappings
+RESOURCE_FILE_MAPPINGS = _DEFAULT_TARGET.resource_file_mappings
+HIDDEN_IMPORT_PACKAGES = _DEFAULT_TARGET.hidden_import_packages
+DYNAMIC_LIB_PACKAGES = _DEFAULT_TARGET.dynamic_lib_packages
+METADATA_PACKAGES = _DEFAULT_TARGET.metadata_packages

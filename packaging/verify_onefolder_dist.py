@@ -22,10 +22,10 @@ def _resolve_resource_root(dist_root: Path) -> Path:
     )
 
 
-def verify_dist_layout(dist_root: Path) -> None:
+def verify_dist_layout(dist_root: Path, *, app_name: str) -> None:
     resource_root = _resolve_resource_root(dist_root)
     required_paths = [
-        dist_root / "CapacityOptimizer.exe",
+        dist_root / f"{app_name}.exe",
         resource_root / "Data_Input",
         resource_root / "docs",
     ]
@@ -38,14 +38,19 @@ def verify_dist_layout(dist_root: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify the one-folder dist layout for CapacityOptimizer.")
+    parser = argparse.ArgumentParser(description="Verify the one-folder dist layout for a packaged desktop app.")
     parser.add_argument(
         "--dist-root",
         default="dist/CapacityOptimizer",
         help="Path to the one-folder application root.",
     )
+    parser.add_argument(
+        "--app-name",
+        default="CapacityOptimizer",
+        help="Expected executable name without the .exe suffix.",
+    )
     args = parser.parse_args()
-    verify_dist_layout(Path(args.dist_root).resolve())
+    verify_dist_layout(Path(args.dist_root).resolve(), app_name=args.app_name)
     return 0
 
 

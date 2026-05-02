@@ -51,8 +51,10 @@ def build_pressure_load_frame(
     capacities: List[CapacityRecord],
     routings: List[RoutingRecord],
     months: List[str],
+    unmet_capacities: List[CapacityRecord] | None = None,
 ) -> pd.DataFrame:
     raw_capacity_map = build_raw_capacity_map(capacities)
+    unmet_capacity_map = build_raw_capacity_map(unmet_capacities or capacities)
     month_wc_load = _build_internal_load_map(results, raw_capacity_map)
     unmet_by_month_product = _extract_unmet_by_month_product(results)
 
@@ -65,8 +67,8 @@ def build_pressure_load_frame(
         assigned_unmet_tons = _assign_mode_b_unmet_tons(
             results=results,
             unmet_by_month_product=unmet_by_month_product,
-            raw_capacity_map=raw_capacity_map,
-            routings=routings,
+            candidate_capacity_map=unmet_capacity_map,
+            display_capacity_map=raw_capacity_map,
         )
 
     for (month, product, work_center), tons in assigned_unmet_tons.items():
@@ -92,8 +94,10 @@ def build_dashboard_fact_frame(
     loads: List[LoadRecord],
     capacities: List[CapacityRecord],
     routings: List[RoutingRecord],
+    unmet_capacities: List[CapacityRecord] | None = None,
 ) -> pd.DataFrame:
     raw_capacity_map = build_raw_capacity_map(capacities)
+    unmet_capacity_map = build_raw_capacity_map(unmet_capacities or capacities)
     internal_tons_by_key = _build_internal_tons_map(results)
     unmet_by_month_product = _extract_unmet_by_month_product(results)
     outsourced_by_month_product = _extract_outsourced_by_month_product(results)
@@ -108,8 +112,8 @@ def build_dashboard_fact_frame(
         assigned_unmet_tons = _assign_mode_b_unmet_tons(
             results=results,
             unmet_by_month_product=unmet_by_month_product,
-            raw_capacity_map=raw_capacity_map,
-            routings=routings,
+            candidate_capacity_map=unmet_capacity_map,
+            display_capacity_map=raw_capacity_map,
         )
         assigned_outsourced_tons = _assign_mode_b_outsourced_tons(
             outsourced_by_month_product=outsourced_by_month_product,
@@ -184,8 +188,10 @@ def build_pressure_tons_frame(
     capacities: List[CapacityRecord],
     routings: List[RoutingRecord],
     months: List[str],
+    unmet_capacities: List[CapacityRecord] | None = None,
 ) -> pd.DataFrame:
     raw_capacity_map = build_raw_capacity_map(capacities)
+    unmet_capacity_map = build_raw_capacity_map(unmet_capacities or capacities)
     month_wc_tons = _build_internal_workcenter_tons_map(results)
     unmet_by_month_product = _extract_unmet_by_month_product(results)
 
@@ -198,8 +204,8 @@ def build_pressure_tons_frame(
         assigned_unmet_tons = _assign_mode_b_unmet_tons(
             results=results,
             unmet_by_month_product=unmet_by_month_product,
-            raw_capacity_map=raw_capacity_map,
-            routings=routings,
+            candidate_capacity_map=unmet_capacity_map,
+            display_capacity_map=raw_capacity_map,
         )
 
     for (month, _product, work_center), tons in assigned_unmet_tons.items():
@@ -218,6 +224,60 @@ def build_pressure_tons_frame(
     return pd.DataFrame(rows, columns=["WorkCenter", *months])
 
 
+def build_unmet_attribution_detail_frame(
+    mode: str,
+    results: List[AllocationResult],
+    loads: List[LoadRecord],
+    capacities: List[CapacityRecord],
+    routings: List[RoutingRecord],
+    unmet_capacities: List[CapacityRecord] | None = None,
+) -> pd.DataFrame:
+    columns = [
+        "Month",
+        "PlannerName",
+        "Product",
+        "ProductFamily",
+        "Plant",
+        "Owner_WorkCenter",
+        "Capacity_Candidate_WorkCenters",
+        "Attributed_WorkCenter",
+        "Reference_Demand_Tons",
+        "Product_Unmet_Tons",
+        "Attributed_Unmet_Tons",
+        "Attribution_Rule",
+    ]
+    unmet_by_month_product = _extract_unmet_by_month_product(results)
+    if not unmet_by_month_product:
+        return pd.DataFrame(columns=columns)
+
+    if mode.strip().lower() == "modea":
+        rows = _build_mode_a_unmet_assignment_rows(
+            loads=loads,
+            unmet_by_month_product=unmet_by_month_product,
+        )
+    else:
+        rows = _build_mode_b_unmet_assignment_rows(
+            results=results,
+            loads=loads,
+            unmet_by_month_product=unmet_by_month_product,
+            candidate_capacity_map=build_raw_capacity_map(unmet_capacities or capacities),
+            display_capacity_map=build_raw_capacity_map(capacities),
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    detail_df = pd.DataFrame(rows, columns=columns)
+    for numeric_col in ("Reference_Demand_Tons", "Product_Unmet_Tons", "Attributed_Unmet_Tons"):
+        detail_df[numeric_col] = pd.to_numeric(detail_df[numeric_col], errors="coerce").fillna(0.0).round(4)
+    detail_df = detail_df.sort_values(
+        ["Month", "Product", "PlannerName", "Attributed_WorkCenter"],
+        key=lambda col: col.map(lambda value: str(value).casefold()),
+        kind="stable",
+    ).reset_index(drop=True)
+    return detail_df
+
+
 def build_capacity_compare_heatmap_frames(
     mode: str,
     basis_results: Dict[str, List[AllocationResult]],
@@ -226,6 +286,7 @@ def build_capacity_compare_heatmap_frames(
     routings: List[RoutingRecord],
     months: List[str],
     demand_basis: str = "Planner",
+    unmet_capacities_by_basis: Dict[str, List[CapacityRecord]] | None = None,
 ) -> Dict[str, pd.DataFrame]:
     max_load = build_pressure_load_frame(
         mode=mode,
@@ -234,6 +295,7 @@ def build_capacity_compare_heatmap_frames(
         capacities=basis_capacities["Max"],
         routings=routings,
         months=months,
+        unmet_capacities=(unmet_capacities_by_basis or {}).get("Max"),
     )
     planner_load = build_pressure_load_frame(
         mode=mode,
@@ -242,6 +304,7 @@ def build_capacity_compare_heatmap_frames(
         capacities=basis_capacities["Planner"],
         routings=routings,
         months=months,
+        unmet_capacities=(unmet_capacities_by_basis or {}).get("Planner"),
     )
     demand_tons = build_pressure_tons_frame(
         mode=mode,
@@ -250,6 +313,7 @@ def build_capacity_compare_heatmap_frames(
         capacities=basis_capacities[demand_basis],
         routings=routings,
         months=months,
+        unmet_capacities=(unmet_capacities_by_basis or {}).get(demand_basis),
     )
 
     monthly = _merge_heatmap_metric_frames(
@@ -406,10 +470,56 @@ def _split_merged_text(value: str | None) -> List[str]:
     return [part for part in parts if part]
 
 
-def _assign_mode_a_unmet_tons(
+def _join_workcenters(work_centers: List[str] | set[str]) -> str:
+    return " | ".join(sorted({str(value).strip() for value in work_centers if str(value).strip()}, key=str.casefold))
+
+
+def _build_month_product_metadata(
+    loads: List[LoadRecord],
+    results: List[AllocationResult],
+) -> Dict[Tuple[str, str], dict[str, object]]:
+    metadata: Dict[Tuple[str, str], dict[str, object]] = {}
+
+    for load in loads:
+        key = (load.month, load.product)
+        payload = metadata.setdefault(
+            key,
+            {
+                "product_family": "",
+                "plant": "",
+                "reference_demand_tons": 0.0,
+            },
+        )
+        if not payload["product_family"] and load.product_family:
+            payload["product_family"] = load.product_family
+        if not payload["plant"] and load.plant:
+            payload["plant"] = load.plant
+        payload["reference_demand_tons"] = float(payload["reference_demand_tons"]) + max(float(load.forecast_tons or 0.0), 0.0)
+
+    for result in results:
+        key = (result.month, result.product)
+        payload = metadata.setdefault(
+            key,
+            {
+                "product_family": "",
+                "plant": "",
+                "reference_demand_tons": 0.0,
+            },
+        )
+        if not payload["product_family"] and result.product_family:
+            payload["product_family"] = result.product_family
+        if not payload["plant"] and result.plant:
+            payload["plant"] = result.plant
+        if float(payload["reference_demand_tons"]) <= EPSILON:
+            payload["reference_demand_tons"] = max(float(payload["reference_demand_tons"]), float(result.demand_tons or 0.0))
+
+    return metadata
+
+
+def _build_mode_a_unmet_assignment_rows(
     loads: List[LoadRecord],
     unmet_by_month_product: Dict[Tuple[str, str], float],
-    ) -> Dict[Tuple[str, str, str], float]:
+) -> List[dict[str, object]]:
     planner_month_product: Dict[Tuple[str, str, str], dict[str, object]] = {}
     for load in loads:
         tons = max(float(load.forecast_tons or 0.0), 0.0)
@@ -418,13 +528,21 @@ def _assign_mode_a_unmet_tons(
         key = (load.month, load.product, load.planner_name)
         bucket = planner_month_product.setdefault(
             key,
-            {"tons": 0.0, "resources": set()},
+            {
+                "tons": 0.0,
+                "resources": set(),
+                "product_family": load.product_family or "",
+                "plant": load.plant or "",
+            },
         )
         bucket["tons"] = float(bucket["tons"]) + tons
         bucket["resources"].update(_split_merged_text(load.resource_group_owner))
+        if not bucket["product_family"] and load.product_family:
+            bucket["product_family"] = load.product_family
+        if not bucket["plant"] and load.plant:
+            bucket["plant"] = load.plant
 
-    assigned_tons: Dict[Tuple[str, str, str], float] = defaultdict(float)
-    grouped: Dict[Tuple[str, str], List[Tuple[str, str, float]]] = defaultdict(list)
+    grouped: Dict[Tuple[str, str], List[dict[str, object]]] = defaultdict(list)
     for (month, product, planner_name), payload in planner_month_product.items():
         resources = sorted(payload["resources"])
         if len(resources) != 1:
@@ -432,8 +550,17 @@ def _assign_mode_a_unmet_tons(
                 f"ModeA unmet assignment requires exactly one resource for planner={planner_name}, "
                 f"product={product}, month={month}. Found: {resources or ['<blank>']}."
             )
-        grouped[(month, product)].append((planner_name, resources[0], float(payload["tons"])))
+        grouped[(month, product)].append(
+            {
+                "planner_name": planner_name,
+                "owner_work_center": resources[0],
+                "reference_demand_tons": float(payload["tons"]),
+                "product_family": payload["product_family"],
+                "plant": payload["plant"],
+            }
+        )
 
+    rows: List[dict[str, object]] = []
     for (month, product), unmet_tons in unmet_by_month_product.items():
         planner_rows = grouped.get((month, product), [])
         if not planner_rows:
@@ -441,63 +568,82 @@ def _assign_mode_a_unmet_tons(
                 f"ModeA unmet assignment could not find planner resource mapping for product={product}, month={month}."
             )
 
-        unique_resources = {resource for _planner, resource, _tons in planner_rows}
-        if len(unique_resources) == 1:
-            resource = next(iter(unique_resources))
-            assigned_tons[(month, product, resource)] += unmet_tons
-            continue
-
-        total_tons = sum(tons for _planner, _resource, tons in planner_rows)
+        total_tons = sum(float(row["reference_demand_tons"]) for row in planner_rows)
         if total_tons <= EPSILON:
             raise ValueError(
                 f"ModeA unmet assignment has zero planner demand while unmet exists for product={product}, month={month}."
             )
-        for _planner, resource, planner_tons in planner_rows:
-            planner_unmet = unmet_tons * planner_tons / total_tons
-            assigned_tons[(month, product, resource)] += planner_unmet
 
+        candidate_workcenters = _join_workcenters([str(row["owner_work_center"]) for row in planner_rows])
+        for row in sorted(planner_rows, key=lambda item: str(item["planner_name"]).casefold()):
+            reference_demand_tons = float(row["reference_demand_tons"])
+            attributed_tons = unmet_tons * reference_demand_tons / total_tons
+            rows.append(
+                {
+                    "Month": month,
+                    "PlannerName": row["planner_name"],
+                    "Product": product,
+                    "ProductFamily": row["product_family"],
+                    "Plant": row["plant"],
+                    "Owner_WorkCenter": row["owner_work_center"],
+                    "Capacity_Candidate_WorkCenters": candidate_workcenters,
+                    "Attributed_WorkCenter": row["owner_work_center"],
+                    "Reference_Demand_Tons": reference_demand_tons,
+                    "Product_Unmet_Tons": unmet_tons,
+                    "Attributed_Unmet_Tons": attributed_tons,
+                    "Attribution_Rule": "ModeA planner owner workcenter",
+                }
+            )
+    return rows
+
+
+def _assign_mode_a_unmet_tons(
+    loads: List[LoadRecord],
+    unmet_by_month_product: Dict[Tuple[str, str], float],
+    ) -> Dict[Tuple[str, str, str], float]:
+    assigned_tons: Dict[Tuple[str, str, str], float] = defaultdict(float)
+    for row in _build_mode_a_unmet_assignment_rows(
+        loads=loads,
+        unmet_by_month_product=unmet_by_month_product,
+    ):
+        assigned_tons[(str(row["Month"]), str(row["Product"]), str(row["Attributed_WorkCenter"]))] += float(row["Attributed_Unmet_Tons"])
     return assigned_tons
 
 
 def _assign_mode_b_unmet_tons(
     results: List[AllocationResult],
     unmet_by_month_product: Dict[Tuple[str, str], float],
-    raw_capacity_map: RawCapacityMap,
-    routings: List[RoutingRecord],
+    candidate_capacity_map: RawCapacityMap,
+    display_capacity_map: RawCapacityMap,
 ) -> Dict[Tuple[str, str, str], float]:
     assigned_tons: Dict[Tuple[str, str, str], float] = defaultdict(float)
+    for row in _build_mode_b_unmet_assignment_rows(
+        results=results,
+        loads=[],
+        unmet_by_month_product=unmet_by_month_product,
+        candidate_capacity_map=candidate_capacity_map,
+        display_capacity_map=display_capacity_map,
+    ):
+        assigned_tons[(str(row["Month"]), str(row["Product"]), str(row["Attributed_WorkCenter"]))] += float(row["Attributed_Unmet_Tons"])
+    return assigned_tons
 
-    product_primary: Dict[str, str] = {}
-    primary_candidates: Dict[str, set[str]] = defaultdict(set)
-    for routing in routings:
-        if not routing.product:
-            continue
-        if not routing.eligible_flag:
-            continue
-        if routing.route_type.strip().lower() != "primary":
-            continue
-        primary_candidates[routing.product].add(routing.work_center)
 
-    for product, work_centers in primary_candidates.items():
-        if len(work_centers) != 1:
-            raise ValueError(
-                f"ModeB unmet assignment requires exactly one eligible product-level Primary route for "
-                f"product={product}. Found: {sorted(work_centers)}."
-            )
-        product_primary[product] = next(iter(work_centers))
+def _build_mode_b_unmet_assignment_rows(
+    results: List[AllocationResult],
+    loads: List[LoadRecord],
+    unmet_by_month_product: Dict[Tuple[str, str], float],
+    candidate_capacity_map: RawCapacityMap,
+    display_capacity_map: RawCapacityMap,
+) -> List[dict[str, object]]:
+    metadata_by_month_product = _build_month_product_metadata(loads, results)
+    base_load_by_month_wc = _build_internal_load_map(results, display_capacity_map)
 
-    base_load_by_month_wc = _build_internal_load_map(results, raw_capacity_map)
-    no_routing_unmet_by_month: Dict[str, Dict[str, float]] = defaultdict(dict)
-
+    unmet_by_month: Dict[str, Dict[str, float]] = defaultdict(dict)
     for (month, product), unmet_tons in unmet_by_month_product.items():
-        primary_wc = product_primary.get(product)
-        if primary_wc:
-            assigned_tons[(month, product, primary_wc)] += unmet_tons
-            base_load_by_month_wc[(month, primary_wc)] += _tons_to_load_share(product, primary_wc, unmet_tons, raw_capacity_map)
-            continue
-        no_routing_unmet_by_month[month][product] = unmet_tons
+        unmet_by_month[month][product] = unmet_tons
 
-    for month, product_unmet in no_routing_unmet_by_month.items():
+    rows: List[dict[str, object]] = []
+    for month, product_unmet in unmet_by_month.items():
         month_base_load = {
             work_center: load_share
             for (bucket, work_center), load_share in base_load_by_month_wc.items()
@@ -506,14 +652,41 @@ def _assign_mode_b_unmet_tons(
         solved_assignments = _solve_mode_b_capacity_only_unmet(
             month=month,
             product_unmet=product_unmet,
-            raw_capacity_map=raw_capacity_map,
+            candidate_capacity_map=candidate_capacity_map,
+            display_capacity_map=display_capacity_map,
             base_load_by_work_center=month_base_load,
         )
         for (product, work_center), tons in solved_assignments.items():
-            assigned_tons[(month, product, work_center)] += tons
-            base_load_by_month_wc[(month, work_center)] += _tons_to_load_share(product, work_center, tons, raw_capacity_map)
+            metadata = metadata_by_month_product.get(
+                (month, product),
+                {"product_family": "", "plant": "", "reference_demand_tons": 0.0},
+            )
+            candidate_workcenters = _join_workcenters(
+                [
+                    candidate_work_center
+                    for (capacity_product, candidate_work_center), raw_capacity in candidate_capacity_map.items()
+                    if capacity_product == product and raw_capacity > EPSILON
+                ]
+            )
+            rows.append(
+                {
+                    "Month": month,
+                    "PlannerName": "",
+                    "Product": product,
+                    "ProductFamily": metadata["product_family"],
+                    "Plant": metadata["plant"],
+                    "Owner_WorkCenter": "",
+                    "Capacity_Candidate_WorkCenters": candidate_workcenters,
+                    "Attributed_WorkCenter": work_center,
+                    "Reference_Demand_Tons": float(metadata["reference_demand_tons"]),
+                    "Product_Unmet_Tons": float(product_unmet[product]),
+                    "Attributed_Unmet_Tons": tons,
+                    "Attribution_Rule": "ModeB baseline capacity workcenter",
+                }
+            )
+            base_load_by_month_wc[(month, work_center)] += _tons_to_load_share(product, work_center, tons, display_capacity_map)
 
-    return assigned_tons
+    return rows
 
 
 def _assign_mode_b_outsourced_tons(
@@ -546,7 +719,8 @@ def _assign_mode_b_outsourced_tons(
 def _solve_mode_b_capacity_only_unmet(
     month: str,
     product_unmet: Dict[str, float],
-    raw_capacity_map: RawCapacityMap,
+    candidate_capacity_map: RawCapacityMap,
+    display_capacity_map: RawCapacityMap,
     base_load_by_work_center: Dict[str, float],
 ) -> Dict[str, float]:
     if not product_unmet:
@@ -556,12 +730,12 @@ def _solve_mode_b_capacity_only_unmet(
     for product in product_unmet:
         candidates = sorted(
             work_center
-            for (capacity_product, work_center), raw_capacity in raw_capacity_map.items()
+            for (capacity_product, work_center), raw_capacity in candidate_capacity_map.items()
             if capacity_product == product and raw_capacity > EPSILON
         )
         if not candidates:
             raise ValueError(
-                f"ModeB unmet assignment could not find any capacity resource for no-routing product={product}, month={month}."
+                f"ModeB unmet assignment could not find any baseline capacity resource for product={product}, month={month}."
             )
         candidates_by_product[product] = candidates
 
@@ -587,7 +761,9 @@ def _solve_mode_b_capacity_only_unmet(
         for product, candidates in candidates_by_product.items():
             if work_center not in candidates:
                 continue
-            raw_capacity = raw_capacity_map[(product, work_center)]
+            raw_capacity = display_capacity_map.get((product, work_center), 0.0)
+            if raw_capacity <= EPSILON:
+                raw_capacity = candidate_capacity_map[(product, work_center)]
             constraint.SetCoefficient(assignment_vars[(product, work_center)], 1.0 / raw_capacity)
 
     objective = solver.Objective()

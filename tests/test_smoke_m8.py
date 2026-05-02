@@ -1,8 +1,9 @@
 import glob
 import logging
 import os
-import tempfile
+import shutil
 import unittest
+import uuid
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -24,8 +25,12 @@ os.makedirs(TEST_TMP_ROOT, exist_ok=True)
 
 @contextmanager
 def workspace_tempdir():
-    with tempfile.TemporaryDirectory(dir=TEST_TMP_ROOT) as tmpdir:
+    tmpdir = os.path.join(TEST_TMP_ROOT, f"tmp_{uuid.uuid4().hex}")
+    os.mkdir(tmpdir)
+    try:
         yield tmpdir
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 class SmokeM8Tests(unittest.TestCase):
@@ -54,7 +59,7 @@ class SmokeM8Tests(unittest.TestCase):
             self.assertTrue(paths.outputs_dir.exists())
             self.assertTrue(paths.logs_dir.exists())
             self.assertTrue(paths.license_active_dir.exists())
-            self.assertTrue(result.paths.control_workbook_path.exists())
+            self.assertFalse(result.paths.control_workbook_path.exists())
             self.assertTrue(result.paths.workspace_manifest_path.exists())
 
     def test_smoke_config_load_from_control_workbook(self):
@@ -69,7 +74,6 @@ class SmokeM8Tests(unittest.TestCase):
             self.assertEqual(config.input_master_folder, os.path.join(os.path.abspath(project_root), "Data_Input"))
             self.assertEqual(config.output_folder, os.path.join(os.path.abspath(project_root), "output"))
             self.assertEqual(config.run_mode, "ModeA")
-            self.assertTrue(config.direct_mode)
             self.assertEqual(config.start_month, "2026-01")
             self.assertEqual(config.horizon_months, 1)
 
@@ -164,7 +168,6 @@ class SmokeM8Tests(unittest.TestCase):
         worksheet[f"B{rows['Start_Month_Num']}"] = 1
         worksheet[f"B{rows['Horizon_Months']}"] = 1
         worksheet[f"B{rows['Run_Mode']}"] = "ModeA"
-        worksheet[f"B{rows['Direct_Mode']}"] = "Yes"
         worksheet[f"B{rows['Verbose']}"] = "No"
         worksheet[f"B{rows['Skip_Validation_Errors']}"] = "No"
         workbook.save(workbook_path)
