@@ -17,7 +17,7 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 from app.data_loader import load_direct_mode_b_with_capacity_bases
 from app.i18n import localize_column_name, localize_sheet_name, localize_value
 from app.models import LoadRecord
-from app.runtime_paths import RuntimePaths, ensure_workspace_dirs, resolve_runtime_paths
+from app.runtime_paths import RuntimePaths, resolve_runtime_paths, with_workspace_dir
 
 
 DEFAULT_OUTPUT_NAME = "product_analysis.xlsx"
@@ -399,6 +399,14 @@ def load_modeb_report_context(report_path: str | Path) -> ModeBReportContext:
     )
 
 
+def infer_workspace_root_from_report(report_path: str | Path) -> Path | None:
+    report_file = Path(report_path).expanduser().resolve()
+    parent = report_file.parent
+    if parent.name.lower() == "output":
+        return parent.parent.resolve()
+    return None
+
+
 def _resolve_input_folder(candidate: Path | None, fallback: Path) -> Path:
     if candidate and candidate.exists():
         return candidate
@@ -409,7 +417,7 @@ def load_supporting_input_data(
     context: ModeBReportContext,
     runtime_paths: RuntimePaths | None = None,
 ) -> SupportingInputData:
-    resolved_paths = ensure_workspace_dirs(runtime_paths or resolve_runtime_paths())
+    resolved_paths = runtime_paths or resolve_runtime_paths()
     default_input_dir = resolved_paths.workspace_input_dir
     load_folder = _resolve_input_folder(context.input_load_folder, default_input_dir)
     master_folder = _resolve_input_folder(context.input_master_folder, default_input_dir)
@@ -917,7 +925,12 @@ def generate_modeb_customer_case_report(
 ) -> Path:
     normalized_products = _normalize_products(products)
     context = load_modeb_report_context(report_path)
-    resolved_paths = ensure_workspace_dirs(runtime_paths or resolve_runtime_paths())
+    if runtime_paths is None:
+        base_paths = resolve_runtime_paths()
+        inferred_workspace_root = infer_workspace_root_from_report(context.report_path) or base_paths.user_workspace_dir
+        resolved_paths = with_workspace_dir(base_paths, inferred_workspace_root)
+    else:
+        resolved_paths = runtime_paths
     supporting_input = load_supporting_input_data(context, resolved_paths)
     output_folder = Path(output_dir) if output_dir is not None else resolved_paths.outputs_dir
     output_folder.mkdir(parents=True, exist_ok=True)

@@ -17,10 +17,14 @@ $Targets = @(
     @{
         Name = "CapacityOptimizer"
         SpecPath = Join-Path $ScriptDir "CapacityOptimizer.spec"
+        ResourceSubpaths = @("Data_Input", "docs")
+        ArchivePrefix = "CapacityOptimizer"
     },
     @{
         Name = "ModeBProductAnalysis"
         SpecPath = Join-Path $ScriptDir "ModeBProductAnalysis.spec"
+        ResourceSubpaths = @()
+        ArchivePrefix = "ModeBProductAnalysis-companion"
     }
 )
 
@@ -32,6 +36,8 @@ function Invoke-OneFolderBuild {
 
     $AppName = $BuildTarget.Name
     $SpecPath = $BuildTarget.SpecPath
+    $ResourceSubpaths = $BuildTarget.ResourceSubpaths
+    $ArchivePrefix = $BuildTarget.ArchivePrefix
 
     Write-Host ""
     Write-Host "Building $AppName"
@@ -44,9 +50,15 @@ function Invoke-OneFolderBuild {
         --workpath $BuildRoot `
         $SpecPath
 
-    python packaging\verify_onefolder_dist.py `
-        --dist-root (Join-Path $DistRoot $AppName) `
-        --app-name $AppName
+    $VerifyArgs = @(
+        "packaging\verify_onefolder_dist.py",
+        "--dist-root", (Join-Path $DistRoot $AppName),
+        "--app-name", $AppName
+    )
+    foreach ($ResourceSubpath in $ResourceSubpaths) {
+        $VerifyArgs += @("--require-resource-subpath", $ResourceSubpath)
+    }
+    python @VerifyArgs
 
     Write-Host "Packaged app: $(Join-Path $DistRoot $AppName)"
 
@@ -57,7 +69,7 @@ function Invoke-OneFolderBuild {
         }
         $DeliveryRoot = Join-Path $ProjectRoot "delivery_packages"
         New-Item -ItemType Directory -Force -Path $DeliveryRoot | Out-Null
-        $ZipPath = Join-Path $DeliveryRoot "$AppName-$ResolvedVersion-win64.zip"
+        $ZipPath = Join-Path $DeliveryRoot "$ArchivePrefix-$ResolvedVersion-win64.zip"
         if (Test-Path $ZipPath) {
             Remove-Item -Force $ZipPath
         }

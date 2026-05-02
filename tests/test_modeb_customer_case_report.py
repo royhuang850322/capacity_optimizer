@@ -8,13 +8,16 @@ from pathlib import Path
 import pandas as pd
 from openpyxl import Workbook, load_workbook
 
+from app.customer_case_launcher import guess_workspace_root, is_capacity_optimizer_workspace
 from app.i18n import localize_column_name, localize_sheet_name, localize_value
 from app.modeb_customer_case_report import (
     find_latest_modeb_report,
     generate_modeb_customer_case_report,
+    infer_workspace_root_from_report,
     load_modeb_report_context,
     resolve_modeb_report_selection,
 )
+from app.runtime_paths import build_runtime_paths
 
 
 TEST_TMP_ROOT = os.path.join(os.path.dirname(__file__), "_tmp")
@@ -180,3 +183,62 @@ class ModeBCustomerCaseReportTests(unittest.TestCase):
         self.assertEqual(product_ws["A5"].value, "Capacity_Basis")
         self.assertEqual(product_ws["B5"].value, "案例类型")
         workbook.close()
+
+    def test_generate_modeb_customer_case_report_falls_back_to_report_workspace_root(self):
+        with workspace_tempdir() as tmpdir:
+            workspace_root = Path(tmpdir) / "CapacityOptimizerWorkspace"
+            input_dir = workspace_root / "Data_Input"
+            output_dir = workspace_root / "output"
+            input_dir.mkdir(parents=True)
+            output_dir.mkdir(parents=True)
+            report_path = output_dir / "capacity_result_ModeB_Baseline_20260502_130000.xlsx"
+
+            _write_modeb_report(report_path, Path(tmpdir) / "missing_input")
+
+            pd.DataFrame(
+                [
+                    {"Month": "2027-01", "PlannerName": "PlannerA", "Product": "P1", "ProductFamily": "F1", "Plant": "PLT1", "Forecast_Tons": 100.0, "ScenarioVersion": "Baseline"},
+                ]
+            ).to_csv(input_dir / "planner1_load.csv", index=False)
+            pd.DataFrame(
+                [
+                    {"Product": "P1", "WorkCenter": "WC1", "Annual_Capacity_Tons": 720.0, "Utilization_Target": 1.0},
+                ]
+            ).to_csv(input_dir / "master_capacity.csv", index=False)
+            pd.DataFrame(
+                [
+                    {"Product": "P1", "Resource": "WC3", "Max Capacity Ton": 30.0, "Planner Capacity Ton": 30.0, "EligibleFalg": "Y", "Router Type": "Primary"},
+                ]
+            ).to_csv(input_dir / "master_routing.csv", index=False)
+
+            output_path = generate_modeb_customer_case_report(
+                report_path=report_path,
+                products=["P1"],
+                output_name="shared_workspace_demo.xlsx",
+            )
+
+            self.assertEqual(output_path.parent, output_dir)
+            self.assertTrue(output_path.exists())
+
+    def test_infer_workspace_root_from_report_and_workspace_guessing(self):
+        with workspace_tempdir() as tmpdir:
+            install_dir = Path(tmpdir) / "ModeBCompanion"
+            workspace_root = Path(tmpdir) / "CapacityOptimizerWorkspace"
+            (workspace_root / "Data_Input").mkdir(parents=True)
+            (workspace_root / "output").mkdir(parents=True)
+            (workspace_root / "CapacityOptimizer.exe").write_bytes(b"x")
+            report_path = workspace_root / "output" / "capacity_result_ModeB_Baseline_20260502_130000.xlsx"
+            report_path.write_bytes(b"x")
+
+            runtime_paths = build_runtime_paths(
+                install_dir=install_dir,
+                bundled_resources_dir=install_dir,
+                user_workspace_dir=install_dir,
+                frozen=True,
+            )
+
+            guessed = guess_workspace_root(runtime_paths, workspace_root)
+
+            self.assertTrue(is_capacity_optimizer_workspace(workspace_root))
+            self.assertEqual(infer_workspace_root_from_report(report_path), workspace_root.resolve())
+            self.assertEqual(guessed, workspace_root.resolve())

@@ -17,6 +17,7 @@ class PackagingTarget:
     entry_script: str
     resource_dir_mappings: tuple[tuple[str, str], ...]
     resource_file_mappings: tuple[tuple[str, str], ...]
+    required_resource_subpaths: tuple[str, ...]
     hidden_import_packages: tuple[str, ...]
     dynamic_lib_packages: tuple[str, ...]
     metadata_packages: tuple[str, ...]
@@ -62,6 +63,7 @@ TARGETS: dict[str, PackagingTarget] = {
         entry_script="CapacityOptimizerLauncher.pyw",
         resource_dir_mappings=_COMMON_RESOURCE_DIR_MAPPINGS,
         resource_file_mappings=_COMMON_RESOURCE_FILE_MAPPINGS,
+        required_resource_subpaths=("Data_Input", "docs"),
         hidden_import_packages=_COMMON_HIDDEN_IMPORT_PACKAGES,
         dynamic_lib_packages=_COMMON_DYNAMIC_LIB_PACKAGES,
         metadata_packages=_COMMON_METADATA_PACKAGES,
@@ -70,8 +72,9 @@ TARGETS: dict[str, PackagingTarget] = {
         target_id="modeb_product_analysis",
         app_name="ModeBProductAnalysis",
         entry_script="ModeBProductAnalysisLauncher.pyw",
-        resource_dir_mappings=_COMMON_RESOURCE_DIR_MAPPINGS,
-        resource_file_mappings=_COMMON_RESOURCE_FILE_MAPPINGS,
+        resource_dir_mappings=(),
+        resource_file_mappings=(),
+        required_resource_subpaths=(),
         hidden_import_packages=_COMMON_HIDDEN_IMPORT_PACKAGES,
         dynamic_lib_packages=_COMMON_DYNAMIC_LIB_PACKAGES,
         metadata_packages=_COMMON_METADATA_PACKAGES,
@@ -109,6 +112,7 @@ APP_NAME = _DEFAULT_TARGET.app_name
 ENTRY_SCRIPT = _DEFAULT_TARGET.entry_script
 RESOURCE_DIR_MAPPINGS = _DEFAULT_TARGET.resource_dir_mappings
 RESOURCE_FILE_MAPPINGS = _DEFAULT_TARGET.resource_file_mappings
+REQUIRED_RESOURCE_SUBPATHS = _DEFAULT_TARGET.required_resource_subpaths
 HIDDEN_IMPORT_PACKAGES = _DEFAULT_TARGET.hidden_import_packages
 DYNAMIC_LIB_PACKAGES = _DEFAULT_TARGET.dynamic_lib_packages
 METADATA_PACKAGES = _DEFAULT_TARGET.metadata_packages

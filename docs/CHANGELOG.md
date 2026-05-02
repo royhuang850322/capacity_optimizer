@@ -7,6 +7,20 @@ The format is based on a simple release log:
 - `Changed` for behavior or workflow updates
 - `Fixed` for bug fixes
 
+## [v2.1.1] - 2026-05-02
+
+Shared-workspace companion packaging release for the ModeB product analysis tool.
+
+### Changed
+- `ModeBProductAnalysis` now reuses an existing `CapacityOptimizer` workspace instead of initializing its own full `Data_Input/docs/licenses/output` tree
+- Companion UI now lets the user choose the shared `CapacityOptimizer` working directory and reads reports from that workspace
+- Companion packaging now omits bundled customer workspace resources and ships as a lightweight companion package
+- Tool version string updated to `v2.1.1`
+
+### Fixed
+- Companion builds now derive fallback `Data_Input` paths from the selected ModeB report location when the workbook's original `Run_Info` paths are unavailable
+- PyInstaller verification now supports lightweight desktop companions that do not bundle report resources
+
 ## [v2.1.0] - 2026-05-02
 
 ModeB product analysis release with refreshed sample data, localized reporting, and dual desktop packaging.
