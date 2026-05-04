@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("CapacityOptimizer", "ModeBProductAnalysis", "WorkCenterAnalysis", "All")]
+    [ValidateSet("CapacityOptimizer", "ProductAnalysis", "ModeBProductAnalysis", "WorkCenterAnalysis", "All")]
     [string]$Target = "CapacityOptimizer",
     [switch]$Clean,
     [switch]$CreateZip,
@@ -21,10 +21,10 @@ $Targets = @(
         ArchivePrefix = "CapacityOptimizer"
     },
     @{
-        Name = "ModeBProductAnalysis"
-        SpecPath = Join-Path $ScriptDir "ModeBProductAnalysis.spec"
+        Name = "ProductAnalysis"
+        SpecPath = Join-Path $ScriptDir "ProductAnalysis.spec"
         ResourceSubpaths = @()
-        ArchivePrefix = "ModeBProductAnalysis-companion"
+        ArchivePrefix = "ProductAnalysis-companion"
     },
     @{
         Name = "WorkCenterAnalysis"
@@ -119,6 +119,9 @@ New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $DistRoot | Out-Null
 
 try {
+    if ($Target -eq "ModeBProductAnalysis") {
+        $Target = "ProductAnalysis"
+    }
     if ($Target -eq "All") {
         foreach ($BuildTarget in $Targets) {
             Invoke-OneFolderBuild -BuildTarget $BuildTarget

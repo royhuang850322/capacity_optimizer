@@ -12,7 +12,7 @@ The format is based on a simple release log:
 Shared-workspace companion packaging release for the ModeB product analysis tool.
 
 ### Changed
-- `ModeBProductAnalysis` now reuses an existing `CapacityOptimizer` workspace instead of initializing its own full `Data_Input/docs/licenses/output` tree
+- `ProductAnalysis` now reuses an existing `CapacityOptimizer` workspace instead of initializing its own full `Data_Input/docs/licenses/output` tree
 - Companion UI now lets the user choose the shared `CapacityOptimizer` working directory and reads reports from that workspace
 - Companion packaging now omits bundled customer workspace resources and ships as a lightweight companion package
 - Tool version string updated to `v2.1.1`
@@ -26,9 +26,9 @@ Shared-workspace companion packaging release for the ModeB product analysis tool
 ModeB product analysis release with refreshed sample data, localized reporting, and dual desktop packaging.
 
 ### Added
-- Standalone `ModeBProductAnalysisLauncher.pyw` desktop tool for generating product-level analysis workbooks from existing `ModeB` outputs
+- Standalone `ProductAnalysisLauncher.pyw` desktop tool for generating product-level analysis workbooks from existing `ModeB` outputs
 - Visible `Unmet_Attribution_Detail` / `未满足回挂明细` sheet across generated reports
-- Dual-target PyInstaller one-folder build flow for both `CapacityOptimizer` and `ModeBProductAnalysis`
+- Dual-target PyInstaller one-folder build flow for both `CapacityOptimizer` and `ProductAnalysis`
 
 ### Changed
 - Sample `Data_Input` datasets now better illustrate partial internal capacity, routing reroute, toller, and unmet behaviors

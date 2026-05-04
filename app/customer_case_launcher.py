@@ -1,4 +1,4 @@
-"""Standalone desktop launcher for ModeB product analysis reports."""
+"""Standalone desktop launcher for product analysis reports."""
 from __future__ import annotations
 
 import json
@@ -45,8 +45,9 @@ except ModuleNotFoundError:
     PYSIDE6_AVAILABLE = False
 
 
-APP_TITLE = f"ModeA / ModeB Product Analysis Reporter {APP_VERSION}"
-SETTINGS_FILENAME = "modeb_product_analysis_launcher_settings.json"
+APP_TITLE = f"Product Analysis Reporter {APP_VERSION}"
+SETTINGS_FILENAME = "product_analysis_launcher_settings.json"
+LEGACY_SETTINGS_FILENAME = "modeb_product_analysis_launcher_settings.json"
 
 
 def _show_native_error(title: str, message: str) -> None:
@@ -107,9 +108,19 @@ def _settings_path(paths: RuntimePaths) -> Path:
     return paths.app_install_dir / SETTINGS_FILENAME
 
 
+def _legacy_settings_path(paths: RuntimePaths) -> Path:
+    return paths.app_install_dir / LEGACY_SETTINGS_FILENAME
+
+
 def load_customer_case_settings(paths: RuntimePaths) -> dict[str, str]:
-    settings_path = _settings_path(paths)
     defaults = _default_settings(paths)
+    settings_path = _settings_path(paths)
+    if not settings_path.exists():
+        legacy_path = _legacy_settings_path(paths)
+        if legacy_path.exists():
+            settings_path = legacy_path
+        else:
+            return defaults
     if not settings_path.exists():
         return defaults
     try:
@@ -162,7 +173,7 @@ if PYSIDE6_AVAILABLE:
 
             header = self._card()
             header_layout = QVBoxLayout(header)
-            title = QLabel("ModeA / ModeB 产品分析工具")
+            title = QLabel("产品分析工具")
             title.setObjectName("Title")
             subtitle = QLabel("读取已有的 ModeA 或 ModeB 单报告，并复用 CapacityOptimizer 的共享工作目录生成产品分析 Excel。")
             subtitle.setObjectName("Subtitle")
@@ -493,7 +504,7 @@ def main() -> int:
             "PySide6 is required for the product analysis launcher UI.\n"
             "Install it with: python -m pip install PySide6"
         )
-        _show_native_error("ModeA / ModeB Product Analysis Reporter", message)
+        _show_native_error(APP_TITLE, message)
         raise SystemExit(message)
     app = QApplication.instance() or QApplication(sys.argv)
     try:
@@ -501,9 +512,9 @@ def main() -> int:
     except Exception as exc:
         message = f"启动工具时发生错误：\n{exc}"
         try:
-            QMessageBox.critical(None, "ModeA / ModeB Product Analysis Reporter", message)
+            QMessageBox.critical(None, APP_TITLE, message)
         except Exception:
-            _show_native_error("ModeA / ModeB Product Analysis Reporter", message)
+            _show_native_error(APP_TITLE, message)
         return 1
     window.show()
     return app.exec()

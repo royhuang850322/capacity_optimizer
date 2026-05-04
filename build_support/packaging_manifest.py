@@ -55,6 +55,8 @@ _COMMON_METADATA_PACKAGES = (
 )
 
 DEFAULT_TARGET_ID = "capacity_optimizer"
+LEGACY_PRODUCT_ANALYSIS_TARGET_ID = "modeb_product_analysis"
+PRODUCT_ANALYSIS_TARGET_ID = "product_analysis"
 
 TARGETS: dict[str, PackagingTarget] = {
     "capacity_optimizer": PackagingTarget(
@@ -68,9 +70,9 @@ TARGETS: dict[str, PackagingTarget] = {
         dynamic_lib_packages=_COMMON_DYNAMIC_LIB_PACKAGES,
         metadata_packages=_COMMON_METADATA_PACKAGES,
     ),
-    "modeb_product_analysis": PackagingTarget(
-        target_id="modeb_product_analysis",
-        app_name="ModeBProductAnalysis",
+    PRODUCT_ANALYSIS_TARGET_ID: PackagingTarget(
+        target_id=PRODUCT_ANALYSIS_TARGET_ID,
+        app_name="ProductAnalysis",
         entry_script="ProductAnalysisLauncher.pyw",
         resource_dir_mappings=(),
         resource_file_mappings=(),
@@ -94,6 +96,8 @@ TARGETS: dict[str, PackagingTarget] = {
 
 
 def get_target(target_id: str = DEFAULT_TARGET_ID) -> PackagingTarget:
+    if target_id == LEGACY_PRODUCT_ANALYSIS_TARGET_ID:
+        target_id = PRODUCT_ANALYSIS_TARGET_ID
     try:
         return TARGETS[target_id]
     except KeyError as exc:
