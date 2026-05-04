@@ -15,10 +15,11 @@ from typing import Any
 
 import click
 
+from app.capacity_basis import CAPACITY_BASES, MAX_BASIS, PLANNED_BASIS
 from app.create_template import refresh_control_workbook_license_sheet
 from app.data_loader import (
     load_config,
-    load_direct_mode_a,
+    load_direct_mode_a_with_capacity_bases,
     load_direct_mode_b_with_capacity_bases,
 )
 from app.load_pressure import build_dashboard_fact_frame
@@ -284,13 +285,13 @@ def run_with_config(
         logger.info("Mode started: %s", selected_mode)
         try:
             if selected_mode == "ModeA":
-                loads, capacities, routings = load_direct_mode_a(
+                loads, capacities_by_basis, routings = load_direct_mode_a_with_capacity_bases(
                     load_folder=config.input_load_folder,
                     master_folder=config.input_master_folder,
                     selected_scenario=selected_scenario,
                 )
             else:
-                loads, baseline_capacities, raw_capacities_by_basis, routings = load_direct_mode_b_with_capacity_bases(
+                loads, baseline_capacities_by_basis, capacities_by_basis, routings = load_direct_mode_b_with_capacity_bases(
                     load_folder=config.input_load_folder,
                     master_folder=config.input_master_folder,
                     selected_scenario=selected_scenario,
@@ -309,71 +310,30 @@ def run_with_config(
 
         click.echo(f"    Load records  : {len(loads):,}")
         if selected_mode == "ModeA":
-            click.echo(f"    Capacity rows : {len(capacities):,}")
+            click.echo(
+                "    Capacity rows : "
+                f"Max={len(capacities_by_basis[MAX_BASIS]):,} | Planned={len(capacities_by_basis[PLANNED_BASIS]):,}"
+            )
         else:
-                click.echo(
-                    "    Capacity rows : "
-                    f"Baseline={len(baseline_capacities):,} | "
-                    f"Max={len(raw_capacities_by_basis['Max']):,} | Planner={len(raw_capacities_by_basis['Planner']):,}"
-                )
+            click.echo(
+                "    Capacity rows : "
+                f"Baseline Max={len(baseline_capacities_by_basis[MAX_BASIS]):,} | "
+                f"Baseline Planned={len(baseline_capacities_by_basis[PLANNED_BASIS]):,} | "
+                f"ModeB Max={len(capacities_by_basis[MAX_BASIS]):,} | "
+                f"ModeB Planned={len(capacities_by_basis[PLANNED_BASIS]):,}"
+            )
         click.echo(f"    Routing rows  : {len(routings):,}")
-        if selected_mode == "ModeA":
-            issues = validate(loads, capacities, routings, mode=selected_mode)
-            if issues:
-                click.echo("      Validation    : Capacity")
-                print_issues(issues)
-            else:
-                click.echo("      Validation    : no issues")
-
-            if has_errors(issues) and not config.skip_validation_errors:
-                _fatal(
-                    summary="Validation found ERROR-level issues.",
-                    code="OPT-1501",
-                    details=f"{selected_mode} stopped because validation failed.",
-                    hints=[
-                        "Fix source data issues reported above and rerun.",
-                        "If you need a forced run, set Skip Validation Errors = Yes.",
-                    ],
-                )
-
-            results = run_optimization_mode_a(
-                months=months,
-                loads=loads,
-                capacities=capacities,
-                verbose=config.verbose,
-            )
-            metrics = _build_run_metrics(
-                selected_mode=selected_mode,
-                capacity_basis="Capacity",
-                loads=loads,
-                results=results,
-                months=months,
-                scenario_name=config.scenario_name,
-            )
-            _print_run_metrics(metrics)
-            metrics_by_mode[selected_mode] = metrics
-            logger.debug("Mode metrics [%s]: %s", selected_mode, metrics_by_mode[selected_mode])
-            run_payloads[selected_mode] = {
-                "loads": loads,
-                "capacities": capacities,
-                "routings": routings,
-                "issues": issues,
-                "results": results,
-                "toller_products": set(),
-                "metrics": metrics,
-            }
-            continue
-
-        capacities_by_basis = {
-            basis: _merge_capacity_records(baseline_capacities, raw_capacities_by_basis[basis])
-            for basis in ("Max", "Planner")
-        }
         basis_payloads: dict[str, dict[str, Any]] = {}
         combined_issues: list[ValidationIssue] = []
 
-        for capacity_basis in ("Max", "Planner"):
+        for capacity_basis in CAPACITY_BASES:
             click.echo(f"    [{capacity_basis}]")
             capacities = capacities_by_basis[capacity_basis]
+            baseline_capacities = (
+                capacities
+                if selected_mode == "ModeA"
+                else baseline_capacities_by_basis[capacity_basis]
+            )
             issues = validate(
                 loads,
                 baseline_capacities,
@@ -395,14 +355,23 @@ def run_with_config(
                     ],
                 )
 
-            results, toller_products = run_optimization_mode_b(
-                months=months,
-                loads=loads,
-                baseline_capacities=baseline_capacities,
-                routing_capacities=capacities,
-                routings=routings,
-                verbose=config.verbose,
-            )
+            if selected_mode == "ModeA":
+                results = run_optimization_mode_a(
+                    months=months,
+                    loads=loads,
+                    capacities=capacities,
+                    verbose=config.verbose,
+                )
+                toller_products = set()
+            else:
+                results, toller_products = run_optimization_mode_b(
+                    months=months,
+                    loads=loads,
+                    baseline_capacities=baseline_capacities,
+                    routing_capacities=capacities,
+                    routings=routings,
+                    verbose=config.verbose,
+                )
 
             metrics = _build_run_metrics(
                 selected_mode=selected_mode,
@@ -421,11 +390,14 @@ def run_with_config(
             }
             _print_run_metrics(metrics)
 
-        metrics_by_mode[selected_mode] = basis_payloads["Planner"]["metrics"]
+        metrics_by_mode[selected_mode] = basis_payloads[PLANNED_BASIS]["metrics"]
         logger.debug("Mode metrics [%s]: %s", selected_mode, metrics_by_mode[selected_mode])
         run_payloads[selected_mode] = {
             "loads": loads,
-            "baseline_capacities": baseline_capacities,
+            "baseline_capacities_by_basis": {
+                basis: capacities_by_basis[basis] if selected_mode == "ModeA" else baseline_capacities_by_basis[basis]
+                for basis in CAPACITY_BASES
+            },
             "capacities_by_basis": capacities_by_basis,
             "routings": routings,
             "basis_payloads": basis_payloads,
@@ -437,41 +409,24 @@ def run_with_config(
     for selected_mode in modes_to_run:
         payload = run_payloads[selected_mode]
         try:
-            if selected_mode == "ModeA":
-                output_paths[selected_mode] = write_results(
-                    results=payload["results"],
-                    loads=payload["loads"],
-                    capacities=payload["capacities"],
-                    routings=payload["routings"],
-                    config=config,
-                    issues=payload["issues"],
-                    months=months,
-                    mode=selected_mode,
-                    toller_products=payload["toller_products"],
-                    unmet_capacities=payload["capacities"],
-                )
-            else:
-                output_paths[selected_mode] = write_capacity_basis_results(
-                    basis_results={
-                        basis: payload["basis_payloads"][basis]["results"]
-                        for basis in ("Max", "Planner")
-                    },
-                    loads=payload["loads"],
-                    basis_capacities=payload["capacities_by_basis"],
-                    routings=payload["routings"],
-                    config=config,
-                    issues=payload["issues"],
-                    months=months,
-                    mode=selected_mode,
-                    toller_products_by_basis={
-                        basis: payload["basis_payloads"][basis]["toller_products"]
-                        for basis in ("Max", "Planner")
-                    },
-                    unmet_capacities_by_basis={
-                        basis: payload["baseline_capacities"]
-                        for basis in ("Max", "Planner")
-                    },
-                )
+            output_paths[selected_mode] = write_capacity_basis_results(
+                basis_results={
+                    basis: payload["basis_payloads"][basis]["results"]
+                    for basis in CAPACITY_BASES
+                },
+                loads=payload["loads"],
+                basis_capacities=payload["capacities_by_basis"],
+                routings=payload["routings"],
+                config=config,
+                issues=payload["issues"],
+                months=months,
+                mode=selected_mode,
+                toller_products_by_basis={
+                    basis: payload["basis_payloads"][basis]["toller_products"]
+                    for basis in CAPACITY_BASES
+                },
+                unmet_capacities_by_basis=payload["baseline_capacities_by_basis"],
+            )
         except Exception as exc:
             _fatal(
                 summary=f"Failed to write {selected_mode} output workbook.",
@@ -581,19 +536,19 @@ def _print_run_metrics(metrics: dict[str, Any]) -> None:
 
 def _mode_results_for_summary(payload: dict[str, Any]):
     if "basis_payloads" in payload:
-        return payload["basis_payloads"]["Planner"]["results"]
+        return payload["basis_payloads"][PLANNED_BASIS]["results"]
     return payload["results"]
 
 
 def _mode_capacities_for_summary(payload: dict[str, Any]):
     if "capacities_by_basis" in payload:
-        return payload["capacities_by_basis"]["Planner"]
+        return payload["capacities_by_basis"][PLANNED_BASIS]
     return payload["capacities"]
 
 
 def _mode_unmet_capacities_for_summary(payload: dict[str, Any]):
-    if "baseline_capacities" in payload:
-        return payload["baseline_capacities"]
+    if "baseline_capacities_by_basis" in payload:
+        return payload["baseline_capacities_by_basis"][PLANNED_BASIS]
     return payload["capacities"]
 
 
@@ -602,13 +557,10 @@ def _mode_capacity_basis_payload(payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "basis_results": {
                 basis: payload["basis_payloads"][basis]["results"]
-                for basis in ("Max", "Planner")
+                for basis in CAPACITY_BASES
             },
             "basis_capacities": payload["capacities_by_basis"],
-            "unmet_capacities_by_basis": {
-                "Max": payload["baseline_capacities"],
-                "Planner": payload["baseline_capacities"],
-            },
+            "unmet_capacities_by_basis": payload["baseline_capacities_by_basis"],
             "loads": payload["loads"],
             "routings": payload["routings"],
         }
@@ -616,33 +568,19 @@ def _mode_capacity_basis_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "basis_results": {
             "Max": payload["results"],
-            "Planner": payload["results"],
+            PLANNED_BASIS: payload["results"],
         },
         "basis_capacities": {
             "Max": payload["capacities"],
-            "Planner": payload["capacities"],
+            PLANNED_BASIS: payload["capacities"],
         },
         "unmet_capacities_by_basis": {
             "Max": payload["capacities"],
-            "Planner": payload["capacities"],
+            PLANNED_BASIS: payload["capacities"],
         },
         "loads": payload["loads"],
         "routings": payload["routings"],
     }
-
-
-def _merge_capacity_records(
-    baseline_capacities,
-    comparison_capacities,
-):
-    merged = {
-        (record.product, record.work_center): record
-        for record in baseline_capacities
-    }
-    for record in comparison_capacities:
-        merged[(record.product, record.work_center)] = record
-    return list(merged.values())
-
 
 def _resolve_modes(run_mode: str) -> list[str]:
     normalized = str(run_mode or "").strip().lower()

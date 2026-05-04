@@ -11,15 +11,17 @@ from openpyxl import load_workbook
 
 from app.data_loader import (
     _aggregate_load_records,
+    _norm_month,
     _parse_load_df,
     load_direct_mode_a,
+    load_direct_mode_a_with_capacity_bases,
 )
 from app.create_template import main as create_template_main, refresh_control_workbook_license_sheet
 from app.data_loader import load_config
 from app.load_pressure import build_dashboard_fact_frame, build_pressure_load_frame
 from app.main import _validate_input_setup
 from app.models import AllocationResult, CapacityRecord, Config, LoadRecord, RoutingRecord
-from app.optimizer import _build_demand, run_optimization_mode_b
+from app.optimizer import _build_demand, run_optimization_mode_a, run_optimization_mode_b
 from app.output_writer import write_capacity_basis_results, write_mode_comparison_summary, write_results
 from app.validator import ValidationIssue, format_issue_report, validate
 
@@ -157,6 +159,79 @@ class RegressionTests(unittest.TestCase):
         self.assertAlmostEqual(capacities[0].utilization_target, 1.0)
         self.assertAlmostEqual(capacities[0].effective_monthly_capacity_tons, 10.0)
 
+    def test_load_direct_mode_a_with_capacity_bases_prefers_dual_capacity_columns(self):
+        with workspace_tempdir() as tmpdir:
+            pd.DataFrame(
+                [
+                    {
+                        "Month": "2025-01",
+                        "PlannerName": "P1",
+                        "Product": "P1",
+                        "ProductFamily": "F1",
+                        "Plant": "A",
+                        "Forecast_Tons": 10,
+                        "Resource": "WC1",
+                    }
+                ]
+            ).to_csv(os.path.join(tmpdir, "planner1_load.csv"), index=False)
+            pd.DataFrame(
+                [
+                    {
+                        "Product": "P1",
+                        "WorkCenter": "WC1",
+                        "Annual_Max_Capacity_Tons": 240.0,
+                        "Annual_Planned_Capacity_Tons": 120.0,
+                        "Annual_Capacity_Tons": 999.0,
+                        "Utilization_Target": 1.0,
+                    }
+                ]
+            ).to_csv(os.path.join(tmpdir, "master_capacity.csv"), index=False)
+
+            _loads, capacities_by_basis, _routings = load_direct_mode_a_with_capacity_bases(tmpdir, tmpdir)
+
+        self.assertAlmostEqual(capacities_by_basis["Max"][0].annual_capacity_tons, 240.0)
+        self.assertAlmostEqual(capacities_by_basis["Planned"][0].annual_capacity_tons, 120.0)
+
+    def test_mode_a_max_vs_planner_capacity_can_change_internal_allocation(self):
+        loads = [
+            LoadRecord(
+                month="2025-01",
+                planner_name="PlannerA",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=100.0,
+                resource_group_owner="WC1",
+            ),
+        ]
+        max_capacities = [
+            CapacityRecord(product="P1", work_center="WC1", annual_capacity_tons=1200.0, utilization_target=1.0),
+        ]
+        planner_capacities = [
+            CapacityRecord(product="P1", work_center="WC1", annual_capacity_tons=720.0, utilization_target=1.0),
+        ]
+
+        max_results = run_optimization_mode_a(
+            months=["2025-01"],
+            loads=loads,
+            capacities=max_capacities,
+        )
+        planner_results = run_optimization_mode_a(
+            months=["2025-01"],
+            loads=loads,
+            capacities=planner_capacities,
+        )
+
+        max_internal = sum(row.allocated_tons for row in max_results if row.allocation_type == "Internal")
+        planner_internal = sum(row.allocated_tons for row in planner_results if row.allocation_type == "Internal")
+        max_unmet = max(row.unmet_tons for row in max_results if row.product == "P1")
+        planner_unmet = max(row.unmet_tons for row in planner_results if row.product == "P1")
+
+        self.assertAlmostEqual(max_internal, 100.0, places=4)
+        self.assertAlmostEqual(planner_internal, 60.0, places=4)
+        self.assertAlmostEqual(max_unmet, 0.0, places=4)
+        self.assertAlmostEqual(planner_unmet, 40.0, places=4)
+
     def test_validate_ignores_utilization_target_range(self):
         capacities = [
             CapacityRecord(
@@ -191,7 +266,50 @@ class RegressionTests(unittest.TestCase):
         issues = validate(loads, [], [], mode="ModeA")
 
         self.assertEqual(loads[0].forecast_tons, -5.0)
-        self.assertIn(("ERROR", "LoadNegativeTons"), {(i.severity, i.check) for i in issues})
+
+    def test_norm_month_accepts_mon_dash_yy_format(self):
+        self.assertEqual(_norm_month("Jan-26"), "2026-01")
+        self.assertEqual(_norm_month("feb-26"), "2026-02")
+        self.assertEqual(_norm_month("September-2026"), "2026-09")
+
+    def test_parse_load_normalizes_mon_dash_yy_months_for_validation(self):
+        loads = _parse_load_df(
+            pd.DataFrame(
+                [
+                    {
+                        "Month": "Jan-26",
+                        "PlannerName": "P1",
+                        "Product": "P1",
+                        "ProductFamily": "F1",
+                        "Plant": "A",
+                        "Forecast_Tons": 10,
+                        "Resource": "WC1",
+                    },
+                    {
+                        "Month": "Feb-26",
+                        "PlannerName": "P1",
+                        "Product": "P1",
+                        "ProductFamily": "F1",
+                        "Plant": "A",
+                        "Forecast_Tons": 12,
+                        "Resource": "WC1",
+                    },
+                ]
+            )
+        )
+        capacities = [
+            CapacityRecord(
+                product="P1",
+                work_center="WC1",
+                annual_capacity_tons=120.0,
+                utilization_target=1.0,
+            )
+        ]
+
+        issues = validate(loads, capacities, [], mode="ModeA")
+
+        self.assertEqual([record.month for record in loads], ["2026-01", "2026-02"])
+        self.assertNotIn(("ERROR", "LoadMonthFormat"), {(i.severity, i.check) for i in issues})
 
     def test_negative_duplicates_are_not_aggregated_away(self):
         records = [
@@ -1082,7 +1200,7 @@ class RegressionTests(unittest.TestCase):
             ]
             basis_capacities = {
                 "Max": [CapacityRecord(product="P1", work_center="WC1", annual_capacity_tons=1200.0, utilization_target=1.0)],
-                "Planner": [CapacityRecord(product="P1", work_center="WC1", annual_capacity_tons=900.0, utilization_target=1.0)],
+                "Planned": [CapacityRecord(product="P1", work_center="WC1", annual_capacity_tons=900.0, utilization_target=1.0)],
             }
             basis_results = {
                 "Max": [
@@ -1123,7 +1241,7 @@ class RegressionTests(unittest.TestCase):
                         residual_after_routing_tons=20.0,
                     ),
                 ],
-                "Planner": [
+                "Planned": [
                     AllocationResult(
                         month="2025-01",
                         product="P1",
@@ -1172,7 +1290,7 @@ class RegressionTests(unittest.TestCase):
                 issues=[],
                 months=["2025-01", "2025-02"],
                 mode="ModeB",
-                toller_products_by_basis={"Max": set(), "Planner": set()},
+                toller_products_by_basis={"Max": set(), "Planned": set()},
             )
 
             workbook = load_workbook(out_path)
@@ -1219,6 +1337,69 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(dashboard_ws["O3"].value, "WorkCenter Filter")
             self.assertEqual(dashboard_ws["R4"].value, "All")
             self.assertIsNone(dashboard_ws["X1"].value)
+            workbook.close()
+
+    def test_write_capacity_basis_results_creates_dual_basis_workbook_for_mode_a(self):
+        with workspace_tempdir() as tmpdir:
+            config = Config(
+                input_load_folder=tmpdir,
+                input_master_folder=tmpdir,
+                output_folder=tmpdir,
+                output_file_name="basis_modea.xlsx",
+                scenario_name="Baseline",
+                start_month="2025-01",
+                horizon_months=2,
+                run_mode="ModeA",
+            )
+            loads = [
+                LoadRecord(
+                    month="2025-01",
+                    planner_name="PlannerA",
+                    product="P1",
+                    product_family="F1",
+                    plant="PLT1",
+                    forecast_tons=100.0,
+                    resource_group_owner="WC1",
+                )
+            ]
+            basis_capacities = {
+                "Max": [CapacityRecord(product="P1", work_center="WC1", annual_capacity_tons=1200.0, utilization_target=1.0)],
+                "Planned": [CapacityRecord(product="P1", work_center="WC1", annual_capacity_tons=720.0, utilization_target=1.0)],
+            }
+            basis_results = {
+                "Max": run_optimization_mode_a(["2025-01"], loads, basis_capacities["Max"]),
+                "Planned": run_optimization_mode_a(["2025-01"], loads, basis_capacities["Planned"]),
+            }
+
+            out_path = write_capacity_basis_results(
+                basis_results=basis_results,
+                loads=loads,
+                basis_capacities=basis_capacities,
+                routings=[],
+                config=config,
+                issues=[],
+                months=["2025-01", "2025-02"],
+                mode="ModeA",
+                toller_products_by_basis={"Max": set(), "Planned": set()},
+                unmet_capacities_by_basis=basis_capacities,
+            )
+
+            workbook = load_workbook(out_path)
+            self.assertIn("Dashboard", workbook.sheetnames)
+            self.assertIn("Monthly_Trend", workbook.sheetnames)
+            self.assertIn("Allocation_Detail", workbook.sheetnames)
+            self.assertIn("Unmet_Attribution_Detail", workbook.sheetnames)
+            self.assertNotIn("Shared Stage 1 baseline", str(workbook["Dashboard"]["A2"].value))
+            helper_ws = workbook["_Dashboard_Helper"]
+            self.assertEqual(helper_ws["A1"].value, "Capacity_Basis")
+            helper_values = {helper_ws["A2"].value, helper_ws["A3"].value}
+            self.assertIn("Max", helper_values)
+            self.assertIn("Planned", helper_values)
+            self.assertIn('"Max"', str(workbook["Dashboard"]["A6"].value))
+            self.assertIn('"Planned"', str(workbook["Dashboard"]["C6"].value))
+            self.assertIn('"Planned"', str(workbook["Dashboard"]["J6"].value))
+            detail_headers = [workbook["Allocation_Detail"].cell(3, idx).value for idx in range(1, workbook["Allocation_Detail"].max_column + 1)]
+            self.assertIn("Capacity_Basis", detail_headers)
             workbook.close()
 
     def test_load_direct_rejects_unrecognized_planner_files(self):

@@ -538,7 +538,8 @@ def _build_capacity_rows(
             "Product": spec["product"],
             "Product Family": spec["family"],
             "Resource": spec["primary_resource"],
-            "Annual Capacity Tons": annual_capacity,
+            "Annual Max Capacity Tons": annual_capacity,
+            "Annual Planned Capacity Tons": annual_capacity,
             "Utilization Target": UTILIZATION_TARGET,
         })
     return rows
@@ -593,7 +594,7 @@ def _build_routing_rows(specs: list[dict], variant: VariantConfig) -> list[dict]
                 "Product Family": spec["family"],
                 "Resource": resource,
                 "Max Capacity Ton": max_capacity,
-                "Planner Capacity Ton": planner_capacity,
+                "Planned Capacity Ton": planner_capacity,
                 "EligibleFalg": "Y",
                 "Router Type": route_type,
             })
@@ -671,7 +672,8 @@ def main() -> None:
             "Product",
             "Product Family",
             "Resource",
-            "Annual Capacity Tons",
+            "Annual Max Capacity Tons",
+            "Annual Planned Capacity Tons",
             "Utilization Target",
         ],
     )
@@ -683,7 +685,7 @@ def main() -> None:
             "Product Family",
             "Resource",
             "Max Capacity Ton",
-            "Planner Capacity Ton",
+            "Planned Capacity Ton",
             "EligibleFalg",
             "Router Type",
         ],

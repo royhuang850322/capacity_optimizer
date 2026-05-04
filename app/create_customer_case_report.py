@@ -14,7 +14,10 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
-from app.data_loader import load_direct_mode_a, load_direct_mode_b_with_capacity_bases
+from app.data_loader import (
+    load_direct_mode_a_with_capacity_bases,
+    load_direct_mode_b_with_capacity_bases,
+)
 from app.main import _merge_capacity_records
 from app.models import AllocationResult, LoadRecord
 from app.optimizer import run_optimization_mode_a, run_optimization_mode_b
@@ -27,7 +30,7 @@ DEFAULT_OUTPUT_DIR = RUNTIME_PATHS.outputs_dir
 DEFAULT_SCENARIO = "Expansion"
 DEFAULT_START_MONTH = "2027-01"
 DEFAULT_HORIZON = 60
-DEFAULT_MODEB_BASIS = "Planner"
+DEFAULT_MODEB_BASIS = "Planned"
 
 CASE_PRODUCTS: list[tuple[str, str]] = [
     ("TRS-02", "ModeA 已经完全消化需求，不需要 routing。"),
@@ -73,7 +76,7 @@ HEADER_LABELS = {
     "Utilization_Target": "Utilization_Target",
     "Route_Type": "路径类型",
     "Max_Capacity_Tons": "Max 产能吨位",
-    "Planner_Capacity_Tons": "Planner 产能吨位",
+    "Planned_Capacity_Tons": "Planner 产能吨位",
     "Eligible_Flag": "Eligible 标记",
     "Allocation_Source": "分配来源",
     "Internal_Tons": "内部承接吨位",
@@ -308,7 +311,7 @@ def _master_routing_rows(raw_routing_rows: Sequence[dict[str, str]], product: st
                 "WorkCenter": str(row.get("Resource", "")).strip(),
                 "Route_Type": _route_type_label(str(row.get("Router Type", "")).strip()),
                 "Max_Capacity_Tons": float(row.get("Max Capacity Ton", 0) or 0),
-                "Planner_Capacity_Tons": float(row.get("Planner Capacity Ton", 0) or 0),
+                "Planned_Capacity_Tons": float(row.get("Planned Capacity Ton", row.get("Planner Capacity Ton", 0)) or 0),
                 "Eligible_Flag": str(row.get("EligibleFalg", "")).strip(),
             }
         )
@@ -632,21 +635,28 @@ def generate_customer_case_report(
     modeb_basis: str = DEFAULT_MODEB_BASIS,
 ) -> Path:
     months = _month_list(start_month, horizon)
-    loads_a, baseline_capacities, _ = load_direct_mode_a(str(input_dir), str(input_dir), selected_scenario=scenario)
-    modea_results = run_optimization_mode_a(months, loads_a, baseline_capacities, verbose=False)
-
-    loads_b, modeb_baseline_capacities, raw_capacities_by_basis, routings = load_direct_mode_b_with_capacity_bases(
+    loads_a, modea_capacities_by_basis, _ = load_direct_mode_a_with_capacity_bases(
         str(input_dir),
         str(input_dir),
         selected_scenario=scenario,
     )
-    routing_basis = raw_capacities_by_basis[modeb_basis]
-    merged_routing_capacities = _merge_capacity_records(modeb_baseline_capacities, routing_basis)
+    modea_results = run_optimization_mode_a(
+        months,
+        loads_a,
+        modea_capacities_by_basis["Planned"],
+        verbose=False,
+    )
+
+    loads_b, modeb_baseline_capacities_by_basis, capacities_by_basis, routings = load_direct_mode_b_with_capacity_bases(
+        str(input_dir),
+        str(input_dir),
+        selected_scenario=scenario,
+    )
     modeb_results, _toller_products = run_optimization_mode_b(
         months,
         loads_b,
-        modeb_baseline_capacities,
-        merged_routing_capacities,
+        modeb_baseline_capacities_by_basis[modeb_basis],
+        capacities_by_basis[modeb_basis],
         routings,
         verbose=False,
     )
@@ -764,12 +774,12 @@ def generate_customer_case_report(
                     "WorkCenter": "（无）",
                     "Route_Type": "没有 product-level routing 行",
                     "Max_Capacity_Tons": 0.0,
-                    "Planner_Capacity_Tons": 0.0,
+                    "Planned_Capacity_Tons": 0.0,
                     "Eligible_Flag": "",
                 }
             ],
             table_name=f"RoutingInput{sheet_index}",
-            ton_columns={"Max_Capacity_Tons", "Planner_Capacity_Tons"},
+            ton_columns={"Max_Capacity_Tons", "Planned_Capacity_Tons"},
         ) + 2
 
         current_row = _write_section(ws, current_row, "ModeA 分配路径", 12)
@@ -903,7 +913,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--scenario", default=DEFAULT_SCENARIO)
     parser.add_argument("--start-month", default=DEFAULT_START_MONTH)
     parser.add_argument("--horizon", type=int, default=DEFAULT_HORIZON)
-    parser.add_argument("--modeb-basis", choices=("Max", "Planner"), default=DEFAULT_MODEB_BASIS)
+    parser.add_argument("--modeb-basis", choices=("Max", "Planned"), default=DEFAULT_MODEB_BASIS)
     return parser.parse_args()
 
 

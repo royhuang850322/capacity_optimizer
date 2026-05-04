@@ -11,8 +11,9 @@ from typing import List, Tuple
 
 import pandas as pd
 
-from app.models import Config, LoadRecord, CapacityRecord, RoutingRecord
+from app.capacity_basis import CAPACITY_BASES, MAX_BASIS, PLANNED_BASIS
 from app.i18n import normalize_language
+from app.models import Config, LoadRecord, CapacityRecord, RoutingRecord
 
 
 PLANNER_FILE_RE = re.compile(r"^planner([1-6])_load\.(xlsx|xls|csv)$", re.IGNORECASE)
@@ -216,13 +217,29 @@ def load_direct_mode_a(
     Mode A: load planner files + master_capacity only.
     No routing table.  Returns empty routing list.
     """
-    loads, caps, _ = load_direct(
+    loads, capacities_by_basis, _ = load_direct_mode_a_with_capacity_bases(
         load_folder=load_folder,
         master_folder=master_folder,
-        routing_filename=None,          # skip routing
         selected_scenario=selected_scenario,
     )
-    return loads, caps, []
+    return loads, capacities_by_basis[PLANNED_BASIS], []
+
+
+def load_direct_mode_a_with_capacity_bases(
+    load_folder: str,
+    master_folder: str,
+    selected_scenario: str | None = None,
+) -> Tuple[List[LoadRecord], dict[str, List[CapacityRecord]], List[RoutingRecord]]:
+    loads, legacy_caps, _ = load_direct(
+        load_folder=load_folder,
+        master_folder=master_folder,
+        routing_filename=None,
+        selected_scenario=selected_scenario,
+    )
+    cap_path = _find_master_file(master_folder, "master_capacity")
+    cap_df = _read_tabular(cap_path)
+    cap_df.columns = [str(c).strip() for c in cap_df.columns]
+    return loads, _load_capacity_bases_from_master_capacity_df(cap_df, legacy_caps), []
 
 
 def load_direct_mode_b(
@@ -234,20 +251,19 @@ def load_direct_mode_b(
     Mode B: load planner files + master_capacity + alternative_routing.
     Tries 'alternative_routing' first, then 'master_routing' as fallback.
     """
-    return load_direct(
+    loads, baseline_capacities_by_basis, _capacities_by_basis, routings = load_direct_mode_b_with_capacity_bases(
         load_folder=load_folder,
         master_folder=master_folder,
-        routing_filename="alternative_routing",
-        routing_required=True,
         selected_scenario=selected_scenario,
     )
+    return loads, baseline_capacities_by_basis[PLANNED_BASIS], routings
 
 
 def load_direct_mode_b_with_capacity_bases(
     load_folder: str,
     master_folder: str,
     selected_scenario: str | None = None,
-) -> Tuple[List[LoadRecord], List[CapacityRecord], dict[str, List[CapacityRecord]], List[RoutingRecord]]:
+) -> Tuple[List[LoadRecord], dict[str, List[CapacityRecord]], dict[str, List[CapacityRecord]], List[RoutingRecord]]:
     loads, legacy_caps, routings = load_direct(
         load_folder=load_folder,
         master_folder=master_folder,
@@ -255,7 +271,19 @@ def load_direct_mode_b_with_capacity_bases(
         routing_required=True,
         selected_scenario=selected_scenario,
     )
-    return loads, legacy_caps, _load_capacity_bases(master_folder, legacy_caps), routings
+    cap_path = _find_master_file(master_folder, "master_capacity")
+    cap_df = _read_tabular(cap_path)
+    cap_df.columns = [str(c).strip() for c in cap_df.columns]
+    baseline_capacities_by_basis = _load_capacity_bases_from_master_capacity_df(cap_df, legacy_caps)
+    routing_capacity_bases = _load_capacity_bases_from_routing(master_folder)
+    merged_capacity_bases = {
+        basis: _merge_capacity_records(
+            baseline_capacities_by_basis[basis],
+            routing_capacity_bases[basis],
+        )
+        for basis in CAPACITY_BASES
+    }
+    return loads, baseline_capacities_by_basis, merged_capacity_bases, routings
 
 
 def load_direct(
@@ -576,6 +604,18 @@ def _normalize_capacity_columns(df: pd.DataFrame) -> pd.DataFrame:
         "annual_capacity_tons":  "Annual_Capacity_Tons",
         "annualcapacitytons":    "Annual_Capacity_Tons",
         "capacity tons":         "Annual_Capacity_Tons",
+        "annual max capacity ton": "Annual_Max_Capacity_Tons",
+        "annual max capacity tons": "Annual_Max_Capacity_Tons",
+        "annual_max_capacity_tons": "Annual_Max_Capacity_Tons",
+        "annualmaxcapacitytons": "Annual_Max_Capacity_Tons",
+        "annual planner capacity ton": "Annual_Planned_Capacity_Tons",
+        "annual planner capacity tons": "Annual_Planned_Capacity_Tons",
+        "annual_planner_capacity_tons": "Annual_Planned_Capacity_Tons",
+        "annualplannercapacitytons": "Annual_Planned_Capacity_Tons",
+        "annual planned capacity ton": "Annual_Planned_Capacity_Tons",
+        "annual planned capacity tons": "Annual_Planned_Capacity_Tons",
+        "annual_planned_capacity_tons": "Annual_Planned_Capacity_Tons",
+        "annualplannedcapacitytons": "Annual_Planned_Capacity_Tons",
         "utilization target":    "Utilization_Target",
         "utilization_target":    "Utilization_Target",
         "utilizationtarget":     "Utilization_Target",
@@ -615,10 +655,12 @@ def _normalize_routing_columns(df: pd.DataFrame) -> pd.DataFrame:
         "capacity tons":         "_CapacityTon",
         "max capacity ton":      "Max_Capacity_Tons",
         "max capacity tons":     "Max_Capacity_Tons",
-        "designed capacity ton": "Planner_Capacity_Tons",
-        "designed capacity tons":"Planner_Capacity_Tons",
-        "planner capacity ton":  "Planner_Capacity_Tons",
-        "planner capacity tons": "Planner_Capacity_Tons",
+        "designed capacity ton": "Planned_Capacity_Tons",
+        "designed capacity tons":"Planned_Capacity_Tons",
+        "planner capacity ton":  "Planned_Capacity_Tons",
+        "planner capacity tons": "Planned_Capacity_Tons",
+        "planned capacity ton":  "Planned_Capacity_Tons",
+        "planned capacity tons": "Planned_Capacity_Tons",
     }
     new_cols = {col: rename_map[col.strip().lower()]
                 for col in df.columns if col.strip().lower() in rename_map}
@@ -634,14 +676,23 @@ _ROUTETYPE_PRIORITY = {
 
 
 def _parse_capacity_df(df: pd.DataFrame) -> List[CapacityRecord]:
+    return _parse_capacity_df_for_column(df, "Annual_Capacity_Tons")
+
+
+def _parse_capacity_df_for_column(
+    df: pd.DataFrame,
+    capacity_column: str,
+) -> List[CapacityRecord]:
     df = _normalize_capacity_columns(df)
+    if capacity_column not in df.columns:
+        return []
     records = []
     for _, row in df.iterrows():
         try:
             records.append(CapacityRecord(
                 product=str(row.get("Product", "")).strip(),
                 work_center=str(row.get("WorkCenter", "")).strip(),
-                annual_capacity_tons=float(row.get("Annual_Capacity_Tons", 0) or 0),
+                annual_capacity_tons=float(row.get(capacity_column, 0) or 0),
                 utilization_target=1.0,
                 effective_from=str(row.get("Effective_From", "") or "").strip() or None,
                 effective_to=str(row.get("Effective_To", "") or "").strip() or None,
@@ -687,9 +738,30 @@ def _parse_capacity_records_from_routing_df(
     return records
 
 
-def _load_capacity_bases(
-    master_folder: str,
+def _load_capacity_bases_from_master_capacity_df(
+    cap_df: pd.DataFrame,
     legacy_capacities: List[CapacityRecord],
+) -> dict[str, List[CapacityRecord]]:
+    legacy_fallback = list(legacy_capacities)
+    max_capacities = _parse_capacity_df_for_column(cap_df, "Annual_Max_Capacity_Tons")
+    planned_capacities = _parse_capacity_df_for_column(cap_df, "Annual_Planned_Capacity_Tons")
+    legacy_from_df = _parse_capacity_df_for_column(cap_df, "Annual_Capacity_Tons")
+
+    if not legacy_fallback:
+        legacy_fallback = legacy_from_df
+    if not max_capacities:
+        max_capacities = list(legacy_fallback)
+    if not planned_capacities:
+        planned_capacities = list(legacy_fallback or max_capacities)
+
+    return {
+        MAX_BASIS: max_capacities,
+        PLANNED_BASIS: planned_capacities,
+    }
+
+
+def _load_capacity_bases_from_routing(
+    master_folder: str,
 ) -> dict[str, List[CapacityRecord]]:
     try:
         routing_capacity_path = _find_master_file(master_folder, "master_routing")
@@ -699,23 +771,36 @@ def _load_capacity_bases(
             routing_capacity_df,
             "Max_Capacity_Tons",
         )
-        planner_capacities = _parse_capacity_records_from_routing_df(
+        planned_capacities = _parse_capacity_records_from_routing_df(
             routing_capacity_df,
-            "Planner_Capacity_Tons",
+            "Planned_Capacity_Tons",
         )
     except Exception:
         max_capacities = []
-        planner_capacities = []
+        planned_capacities = []
 
     if not max_capacities:
-        max_capacities = list(legacy_capacities)
-    if not planner_capacities:
-        planner_capacities = list(max_capacities)
+        max_capacities = []
+    if not planned_capacities:
+        planned_capacities = list(max_capacities)
 
     return {
-        "Max": max_capacities,
-        "Planner": planner_capacities,
+        MAX_BASIS: max_capacities,
+        PLANNED_BASIS: planned_capacities,
     }
+
+
+def _merge_capacity_records(
+    baseline_capacities: List[CapacityRecord],
+    comparison_capacities: List[CapacityRecord],
+) -> List[CapacityRecord]:
+    merged = {
+        (record.product, record.work_center): record
+        for record in baseline_capacities
+    }
+    for record in comparison_capacities:
+        merged[(record.product, record.work_center)] = record
+    return list(merged.values())
 
 
 def _parse_routing_df(df: pd.DataFrame) -> List[RoutingRecord]:
@@ -781,16 +866,43 @@ def _norm_month(raw: str) -> str:
     Normalise to YYYY-MM. Handles:
       - YYYY-MM          e.g. 2025-01
       - YYYY/MM          e.g. 2025/01
+      - Mon-YY / Mon YYYY / Month-YYYY  e.g. Jan-26, Jan 2026, January-2026
       - Excel serial no. e.g. 46023  (days since 1899-12-30)
       - Any string pandas can parse  e.g. "Jan 2025", "2025-01-15"
     """
     raw = raw.strip()
+    if not raw:
+        return raw
     # Already YYYY-MM
     if len(raw) == 7 and raw[4] == "-":
         return raw
     # YYYY/MM
     if len(raw) == 7 and raw[4] == "/":
         return raw.replace("/", "-")
+    # English month name with 2/4 digit year, e.g. Jan-26 / January 2026
+    month_text_match = re.fullmatch(r"([A-Za-z]+)[\s\-\/\.]+(\d{2}|\d{4})", raw)
+    if month_text_match:
+        month_name, year_token = month_text_match.groups()
+        month_lookup = {
+            "jan": 1, "january": 1,
+            "feb": 2, "february": 2,
+            "mar": 3, "march": 3,
+            "apr": 4, "april": 4,
+            "may": 5,
+            "jun": 6, "june": 6,
+            "jul": 7, "july": 7,
+            "aug": 8, "august": 8,
+            "sep": 9, "sept": 9, "september": 9,
+            "oct": 10, "october": 10,
+            "nov": 11, "november": 11,
+            "dec": 12, "december": 12,
+        }
+        month_num = month_lookup.get(month_name.strip().lower())
+        if month_num is not None:
+            year_num = int(year_token)
+            if len(year_token) == 2:
+                year_num += 2000
+            return f"{year_num}-{month_num:02d}"
     # Excel serial number (pure integer string, e.g. "46023")
     if raw.isdigit():
         try:

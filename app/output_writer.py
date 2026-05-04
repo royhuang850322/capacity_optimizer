@@ -330,7 +330,8 @@ def write_results(
         routings,
         config,
         months,
-        mode,
+        run_mode=mode,
+        report_label=mode,
         dashboard_fact=(dashboard_facts_by_mode or {}).get(mode),
         unmet_capacities=unmet_capacities,
     )
@@ -409,7 +410,8 @@ def write_mode_comparison_summary(
             mode_routings.get(mode) if mode_routings else None,
             config,
             months,
-            mode,
+            run_mode=mode,
+            report_label=mode,
             dashboard_fact=(dashboard_facts_by_mode or {}).get(mode),
             unmet_capacities=mode_unmet_capacities.get(mode) if mode_unmet_capacities else None,
         )
@@ -481,7 +483,7 @@ def write_capacity_basis_results(
     wb.remove(wb.active)
     _enable_formula_recalc(wb)
 
-    basis_labels = ("Max", "Planner")
+    basis_labels = ("Max", "Planned")
     artifacts = {
         basis: _build_mode_artifact(
             basis_results[basis],
@@ -490,7 +492,8 @@ def write_capacity_basis_results(
             routings,
             config,
             months,
-            basis,
+            run_mode=mode,
+            report_label=basis,
             unmet_capacities=(unmet_capacities_by_basis or {}).get(basis),
         )
         for basis in basis_labels
@@ -619,17 +622,19 @@ def _build_mode_artifact(
     routings: Optional[List[RoutingRecord]],
     config: Config,
     months: List[str],
-    mode: str,
+    run_mode: str,
+    report_label: Optional[str] = None,
     dashboard_fact: Optional[pd.DataFrame] = None,
     unmet_capacities: Optional[List[CapacityRecord]] = None,
 ) -> dict[str, Any]:
     capacities = capacities or []
     routings = routings or []
     raw_capacity_map = build_raw_capacity_map(capacities)
+    report_label = report_label or run_mode
     plannerized_results = _plannerize_results(results, loads)
     df_detail = _results_to_df(plannerized_results, raw_capacity_map)
     wc_load_df = build_pressure_load_frame(
-        mode=mode,
+        mode=run_mode,
         results=results,
         loads=loads or [],
         capacities=capacities,
@@ -638,7 +643,7 @@ def _build_mode_artifact(
         unmet_capacities=unmet_capacities,
     )
     wc_tons_df = build_pressure_tons_frame(
-        mode=mode,
+        mode=run_mode,
         results=results,
         loads=loads or [],
         capacities=capacities,
@@ -646,11 +651,11 @@ def _build_mode_artifact(
         months=months,
         unmet_capacities=unmet_capacities,
     )
-    run_info_df = _build_run_info_df(config, mode)
+    run_info_df = _build_run_info_df(config, run_mode)
     analysis = build_result_analysis(df_detail, wc_load_df, run_info_df)
-    metrics = _build_preview_metrics(mode, analysis, results, months)
+    metrics = _build_preview_metrics(report_label, analysis, results, months)
     dashboard_fact = dashboard_fact if dashboard_fact is not None else build_dashboard_fact_frame(
-        mode=mode,
+        mode=run_mode,
         results=results,
         loads=loads or [],
         capacities=capacities,
@@ -751,20 +756,26 @@ def _enable_formula_recalc(wb: Workbook) -> None:
         pass
 
 
-def _combine_dashboard_facts(dashboard_facts_by_mode: dict[str, pd.DataFrame]) -> pd.DataFrame:
+def _combine_dashboard_facts(
+    dashboard_facts_by_mode: dict[str, pd.DataFrame],
+    *,
+    label_column: str = "Mode",
+) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
-    for mode_name, fact_df in (dashboard_facts_by_mode or {}).items():
+    for label_value, fact_df in (dashboard_facts_by_mode or {}).items():
         if fact_df is None or fact_df.empty:
             continue
         frame = fact_df.copy()
-        if "Mode" not in frame.columns:
-            frame.insert(0, "Mode", mode_name)
+        if label_column in frame.columns:
+            frame[label_column] = str(label_value)
+        else:
+            frame.insert(0, label_column, label_value)
         frames.append(frame)
 
     if not frames:
         return pd.DataFrame(
             columns=[
-                "Mode",
+                label_column,
                 "Year",
                 "WorkCenter",
                 "Demand_Tons",
@@ -778,19 +789,19 @@ def _combine_dashboard_facts(dashboard_facts_by_mode: dict[str, pd.DataFrame]) -
     combined = pd.concat(frames, ignore_index=True)
     for column in ("Demand_Tons", "Internal_Tons", "Outsourced_Tons", "Unmet_Tons", "Supplied_Tons"):
         combined[column] = pd.to_numeric(combined[column], errors="coerce").fillna(0.0)
-    combined["Mode"] = combined["Mode"].astype(str)
+    combined[label_column] = combined[label_column].astype(str)
     if "Year" not in combined.columns:
         combined["Year"] = "All"
     combined["Year"] = combined["Year"].astype(str)
     combined["WorkCenter"] = combined["WorkCenter"].astype(str)
     combined = (
-        combined.groupby(["Mode", "Year", "WorkCenter"], as_index=False)[
+        combined.groupby([label_column, "Year", "WorkCenter"], as_index=False)[
             ["Demand_Tons", "Internal_Tons", "Outsourced_Tons", "Unmet_Tons", "Supplied_Tons"]
         ]
         .sum()
         .sort_values(
-            ["Mode", "Year", "WorkCenter"],
-            key=lambda col: col.map(str.casefold) if col.name in {"Mode", "Year", "WorkCenter"} else col,
+            [label_column, "Year", "WorkCenter"],
+            key=lambda col: col.map(str.casefold) if col.name in {label_column, "Year", "WorkCenter"} else col,
         )
     )
     return combined
@@ -845,17 +856,18 @@ def _write_dashboard_fact_sheet(
     wb: Workbook,
     dashboard_facts_by_mode: dict[str, pd.DataFrame],
     helper_sheet_name: str = "_Dashboard_Helper",
+    label_column: str = "Mode",
 ) -> dict[str, Any]:
     ws = _get_or_create_dashboard_helper_sheet(wb, helper_sheet_name)
     start_row = _next_helper_start_row(ws)
     start_col = 1
-    fact_df = _combine_dashboard_facts(dashboard_facts_by_mode)
+    fact_df = _combine_dashboard_facts(dashboard_facts_by_mode, label_column=label_column)
 
     if fact_df.empty:
         fact_df = pd.DataFrame(
             [
                 {
-                    "Mode": "",
+                    label_column: "",
                     "Year": "",
                     "WorkCenter": "",
                     "Demand_Tons": 0.0,
@@ -950,10 +962,11 @@ def _dashboard_filtered_sum_formula(
     selection_mode_ref: str,
     selected_range_ref: str,
     selected_year_ref: str | None = None,
+    label_column: str = "Mode",
 ) -> str:
     all_label = _rt("selection_mode_all")
     value_range = _sheet_range_ref(meta, metric_name)
-    mode_range = _sheet_range_ref(meta, "Mode")
+    mode_range = _sheet_range_ref(meta, label_column)
     workcenter_range = _sheet_range_ref(meta, "WorkCenter")
     year_range = _sheet_range_ref(meta, "Year") if "Year" in meta["col_index"] else None
     if year_range and selected_year_ref:
@@ -2085,21 +2098,22 @@ def _write_capacity_basis_dashboard(
     ws = wb.create_sheet(_sheet_title(sheet_name))
     fact_meta = _write_dashboard_fact_sheet(
         wb,
-        {basis: artifacts[basis]["dashboard_fact"] for basis in ("Max", "Planner")},
+        {basis: artifacts[basis]["dashboard_fact"] for basis in ("Max", "Planned")},
+        label_column="Capacity_Basis",
     )
     scenario = (
         artifacts["Max"]["analysis"].get("scenario_name")
-        or artifacts["Planner"]["analysis"].get("scenario_name")
+        or artifacts["Planned"]["analysis"].get("scenario_name")
         or "N/A"
     )
     scenario_label = localize_value(_lang(), scenario)
     subtitle = _text(
-        f"Scenario: {scenario} | Mode: {mode} | Capacity basis comparison: Max vs Planner",
+        f"Scenario: {scenario} | Mode: {mode} | Capacity basis comparison: Max vs Planned",
         f"场景：{scenario_label} | 模式：{localize_mode(_lang(), mode)} | 产能口径对比：最大产能 对比 计划产能",
     )
-    if _is_mode_b_report(mode):
+    if False and _is_mode_b_report(mode):
         subtitle = _text(
-            f"Scenario: {scenario} | Mode: {mode} | Shared Stage 1 baseline with Max vs Planner Stage 2 overflow comparison",
+            f"Scenario: {scenario} | Mode: {mode} | Shared Stage 1 baseline with Max vs Planned Stage 2 overflow comparison",
             f"场景：{scenario_label} | 模式：{localize_mode(_lang(), mode)} | Stage 1 共用基础产能，仅比较 Stage 2 在最大产能与计划产能下的溢出结果。",
         )
     _prepare_dashboard_sheet(
@@ -2119,11 +2133,11 @@ def _write_capacity_basis_dashboard(
         title="Total demand",
         left_label="Max",
         left_value=_dashboard_filtered_sum_formula(
-            fact_meta, "Max", "Demand_Tons", selection_mode_ref, selected_range_ref, selected_year_ref
+            fact_meta, "Max", "Demand_Tons", selection_mode_ref, selected_range_ref, selected_year_ref, "Capacity_Basis"
         ),
-        right_label="Planner",
+        right_label="Planned",
         right_value=_dashboard_filtered_sum_formula(
-            fact_meta, "Planner", "Demand_Tons", selection_mode_ref, selected_range_ref, selected_year_ref
+            fact_meta, "Planned", "Demand_Tons", selection_mode_ref, selected_range_ref, selected_year_ref, "Capacity_Basis"
         ),
         delta_label="Delta",
         delta_value="=C6-A6",
@@ -2136,11 +2150,11 @@ def _write_capacity_basis_dashboard(
         title="Internal allocated",
         left_label="Max",
         left_value=_dashboard_filtered_sum_formula(
-            fact_meta, "Max", "Internal_Tons", selection_mode_ref, selected_range_ref, selected_year_ref
+            fact_meta, "Max", "Internal_Tons", selection_mode_ref, selected_range_ref, selected_year_ref, "Capacity_Basis"
         ),
-        right_label="Planner",
+        right_label="Planned",
         right_value=_dashboard_filtered_sum_formula(
-            fact_meta, "Planner", "Internal_Tons", selection_mode_ref, selected_range_ref, selected_year_ref
+            fact_meta, "Planned", "Internal_Tons", selection_mode_ref, selected_range_ref, selected_year_ref, "Capacity_Basis"
         ),
         delta_label="Delta",
         delta_value="=J6-H6",
@@ -2153,11 +2167,11 @@ def _write_capacity_basis_dashboard(
         title="Outsourced",
         left_label="Max",
         left_value=_dashboard_filtered_sum_formula(
-            fact_meta, "Max", "Outsourced_Tons", selection_mode_ref, selected_range_ref, selected_year_ref
+            fact_meta, "Max", "Outsourced_Tons", selection_mode_ref, selected_range_ref, selected_year_ref, "Capacity_Basis"
         ),
-        right_label="Planner",
+        right_label="Planned",
         right_value=_dashboard_filtered_sum_formula(
-            fact_meta, "Planner", "Outsourced_Tons", selection_mode_ref, selected_range_ref, selected_year_ref
+            fact_meta, "Planned", "Outsourced_Tons", selection_mode_ref, selected_range_ref, selected_year_ref, "Capacity_Basis"
         ),
         delta_label="Delta",
         delta_value="=C10-A10",
@@ -2170,11 +2184,11 @@ def _write_capacity_basis_dashboard(
         title="Residual unmet",
         left_label="Max",
         left_value=_dashboard_filtered_sum_formula(
-            fact_meta, "Max", "Unmet_Tons", selection_mode_ref, selected_range_ref, selected_year_ref
+            fact_meta, "Max", "Unmet_Tons", selection_mode_ref, selected_range_ref, selected_year_ref, "Capacity_Basis"
         ),
-        right_label="Planner",
+        right_label="Planned",
         right_value=_dashboard_filtered_sum_formula(
-            fact_meta, "Planner", "Unmet_Tons", selection_mode_ref, selected_range_ref, selected_year_ref
+            fact_meta, "Planned", "Unmet_Tons", selection_mode_ref, selected_range_ref, selected_year_ref, "Capacity_Basis"
         ),
         delta_label="Delta",
         delta_value="=J10-H10",
@@ -2187,8 +2201,8 @@ def _write_capacity_basis_dashboard(
         title="Service level",
         left_label="Max",
         left_value=f"=IF({demand_cells['Max']}=0,0,({internal_cells['Max']}+{outsourced_cells['Max']})/{demand_cells['Max']})",
-        right_label="Planner",
-        right_value=f"=IF({demand_cells['Planner']}=0,0,({internal_cells['Planner']}+{outsourced_cells['Planner']})/{demand_cells['Planner']})",
+        right_label="Planned",
+        right_value=f"=IF({demand_cells['Planned']}=0,0,({internal_cells['Planned']}+{outsourced_cells['Planned']})/{demand_cells['Planned']})",
         delta_label="Delta",
         delta_value="=C14-A14",
         number_format=PCT_FMT,
@@ -2202,7 +2216,7 @@ def _write_capacity_basis_dashboard(
         left_value=_dashboard_selected_workcenter_count_formula(
             fact_meta, selection_mode_ref, selected_range_ref
         ),
-        right_label="Planner",
+        right_label="Planned",
         right_value=_dashboard_selected_workcenter_count_formula(
             fact_meta, selection_mode_ref, selected_range_ref
         ),
@@ -2219,17 +2233,17 @@ def _write_capacity_basis_dashboard(
                 f"='{ws.title}'!{outsourced_cells['Max']}",
                 f"='{ws.title}'!{unmet_cells['Max']}",
             ],
-            "Planner": [
-                f"='{ws.title}'!{internal_cells['Planner']}",
-                f"='{ws.title}'!{outsourced_cells['Planner']}",
-                f"='{ws.title}'!{unmet_cells['Planner']}",
+            "Planned": [
+                f"='{ws.title}'!{internal_cells['Planned']}",
+                f"='{ws.title}'!{outsourced_cells['Planned']}",
+                f"='{ws.title}'!{unmet_cells['Planned']}",
             ],
         }
     )
     mix_layout = _write_dashboard_helper_table(
         wb,
         mix_df,
-        num_formats={"Max": TONS_FMT, "Planner": TONS_FMT},
+        num_formats={"Max": TONS_FMT, "Planned": TONS_FMT},
     )
     helper_ws = wb[mix_layout["sheet_name"]]
     ws.merge_cells("A16:H16")
@@ -2247,7 +2261,7 @@ def _write_capacity_basis_dashboard(
             helper_ws,
             min_col=mix_layout["col_index"]["Max"],
             min_row=mix_layout["start_row"],
-            max_col=mix_layout["col_index"]["Planner"],
+            max_col=mix_layout["col_index"]["Planned"],
             max_row=mix_layout["end_row"],
         ),
         titles_from_data=True,
@@ -2266,10 +2280,10 @@ def _write_capacity_basis_dashboard(
 
     service_df = pd.DataFrame(
         {
-            "Basis": ["Max", "Planner"],
+            "Basis": ["Max", "Planned"],
             "Service_Level": [
                 f"='{ws.title}'!{service_cells['Max']}",
-                f"='{ws.title}'!{service_cells['Planner']}",
+                f"='{ws.title}'!{service_cells['Planned']}",
             ],
         }
     )
@@ -2321,40 +2335,40 @@ def _write_capacity_basis_monthly_analysis(
     _prepare_monthly_trend_sheet(
         ws,
         _text(
-            f"Compare Max and Planner capacity basis month by month for {mode}.",
-            f"按月份比较 {localize_mode(_lang(), mode)} 在 Max 与 Planner 两种产能口径下的结果。",
+            f"Compare Max and Planned capacity basis month by month for {mode}.",
+            f"按月份比较 {localize_mode(_lang(), mode)} 在 Max 与 Planned 两种产能口径下的结果。",
         ),
         header_end_col="L",
     )
 
     monthly_max = artifacts["Max"]["analysis"]["monthly_summary"].copy()
-    monthly_planner = artifacts["Planner"]["analysis"]["monthly_summary"].copy()
+    monthly_planner = artifacts["Planned"]["analysis"]["monthly_summary"].copy()
     monthly_compare = monthly_max.merge(
         monthly_planner,
         on="Month",
         how="outer",
-        suffixes=("_Max", "_Planner"),
+        suffixes=("_Max", "_Planned"),
     ).fillna(0.0).sort_values("Month")
     if monthly_compare.empty:
         ws["A3"] = _text("No monthly comparison data is available for this result.", "当前结果没有可用的月度对比数据。")
         return
 
     monthly_compare.insert(1, "Year", monthly_compare["Month"].astype(str).str[:4])
-    monthly_compare["Internal_Delta"] = monthly_compare["Internal_Tons_Planner"] - monthly_compare["Internal_Tons_Max"]
-    monthly_compare["Outsourced_Delta"] = monthly_compare["Outsourced_Tons_Planner"] - monthly_compare["Outsourced_Tons_Max"]
-    monthly_compare["Unmet_Delta"] = monthly_compare["Unmet_Tons_Planner"] - monthly_compare["Unmet_Tons_Max"]
-    monthly_compare["Service_Level_Delta"] = monthly_compare["Service_Level_Planner"] - monthly_compare["Service_Level_Max"]
+    monthly_compare["Internal_Delta"] = monthly_compare["Internal_Tons_Planned"] - monthly_compare["Internal_Tons_Max"]
+    monthly_compare["Outsourced_Delta"] = monthly_compare["Outsourced_Tons_Planned"] - monthly_compare["Outsourced_Tons_Max"]
+    monthly_compare["Unmet_Delta"] = monthly_compare["Unmet_Tons_Planned"] - monthly_compare["Unmet_Tons_Max"]
+    monthly_compare["Service_Level_Delta"] = monthly_compare["Service_Level_Planned"] - monthly_compare["Service_Level_Max"]
 
     yearly_compare = (
         monthly_compare.groupby("Year", as_index=False)
         .agg(
             Demand_Tons_Max=("Demand_Tons_Max", "sum"),
             Internal_Tons_Max=("Internal_Tons_Max", "sum"),
-            Internal_Tons_Planner=("Internal_Tons_Planner", "sum"),
+            Internal_Tons_Planned=("Internal_Tons_Planned", "sum"),
             Outsourced_Tons_Max=("Outsourced_Tons_Max", "sum"),
-            Outsourced_Tons_Planner=("Outsourced_Tons_Planner", "sum"),
+            Outsourced_Tons_Planned=("Outsourced_Tons_Planned", "sum"),
             Unmet_Tons_Max=("Unmet_Tons_Max", "sum"),
-            Unmet_Tons_Planner=("Unmet_Tons_Planner", "sum"),
+            Unmet_Tons_Planned=("Unmet_Tons_Planned", "sum"),
         )
         .sort_values("Year")
     )
@@ -2363,12 +2377,12 @@ def _write_capacity_basis_monthly_analysis(
         .div(yearly_compare["Demand_Tons_Max"].replace(0, pd.NA))
         .fillna(0.0)
     )
-    yearly_compare["Service_Level_Planner"] = (
-        (yearly_compare["Internal_Tons_Planner"] + yearly_compare["Outsourced_Tons_Planner"])
+    yearly_compare["Service_Level_Planned"] = (
+        (yearly_compare["Internal_Tons_Planned"] + yearly_compare["Outsourced_Tons_Planned"])
         .div(yearly_compare["Demand_Tons_Max"].replace(0, pd.NA))
         .fillna(0.0)
     )
-    yearly_compare["Unmet_Delta"] = yearly_compare["Unmet_Tons_Planner"] - yearly_compare["Unmet_Tons_Max"]
+    yearly_compare["Unmet_Delta"] = yearly_compare["Unmet_Tons_Planned"] - yearly_compare["Unmet_Tons_Max"]
     ws["A3"] = _rt("yearly_summary")
     ws["A3"].fill = SUMMARY_FILL
     ws["A3"].font = Font(bold=True, color="1F4E79", size=12)
@@ -2382,13 +2396,13 @@ def _write_capacity_basis_monthly_analysis(
                 "Year",
                 "Demand_Tons_Max",
                 "Internal_Tons_Max",
-                "Internal_Tons_Planner",
+                "Internal_Tons_Planned",
                 "Outsourced_Tons_Max",
-                "Outsourced_Tons_Planner",
+                "Outsourced_Tons_Planned",
                 "Unmet_Tons_Max",
-                "Unmet_Tons_Planner",
+                "Unmet_Tons_Planned",
                 "Service_Level_Max",
-                "Service_Level_Planner",
+                "Service_Level_Planned",
                 "Unmet_Delta",
             ]
         ],
@@ -2397,13 +2411,13 @@ def _write_capacity_basis_monthly_analysis(
         num_formats={
             "Demand_Tons_Max": TONS_FMT,
             "Internal_Tons_Max": TONS_FMT,
-            "Internal_Tons_Planner": TONS_FMT,
+            "Internal_Tons_Planned": TONS_FMT,
             "Outsourced_Tons_Max": TONS_FMT,
-            "Outsourced_Tons_Planner": TONS_FMT,
+            "Outsourced_Tons_Planned": TONS_FMT,
             "Unmet_Tons_Max": TONS_FMT,
-            "Unmet_Tons_Planner": TONS_FMT,
+            "Unmet_Tons_Planned": TONS_FMT,
             "Service_Level_Max": PCT_FMT,
-            "Service_Level_Planner": PCT_FMT,
+            "Service_Level_Planned": PCT_FMT,
             "Unmet_Delta": TONS_FMT,
         },
         highlight_positive_cols=["Unmet_Delta"],
@@ -2425,13 +2439,13 @@ def _write_capacity_basis_monthly_analysis(
                 "Year",
                 "Demand_Tons_Max",
                 "Internal_Tons_Max",
-                "Internal_Tons_Planner",
+                "Internal_Tons_Planned",
                 "Outsourced_Tons_Max",
-                "Outsourced_Tons_Planner",
+                "Outsourced_Tons_Planned",
                 "Unmet_Tons_Max",
-                "Unmet_Tons_Planner",
+                "Unmet_Tons_Planned",
                 "Service_Level_Max",
-                "Service_Level_Planner",
+                "Service_Level_Planned",
                 "Service_Level_Delta",
             ]
         ],
@@ -2440,16 +2454,16 @@ def _write_capacity_basis_monthly_analysis(
         num_formats={
             "Demand_Tons_Max": TONS_FMT,
             "Internal_Tons_Max": TONS_FMT,
-            "Internal_Tons_Planner": TONS_FMT,
+            "Internal_Tons_Planned": TONS_FMT,
             "Outsourced_Tons_Max": TONS_FMT,
-            "Outsourced_Tons_Planner": TONS_FMT,
+            "Outsourced_Tons_Planned": TONS_FMT,
             "Unmet_Tons_Max": TONS_FMT,
-            "Unmet_Tons_Planner": TONS_FMT,
+            "Unmet_Tons_Planned": TONS_FMT,
             "Service_Level_Max": PCT_FMT,
-            "Service_Level_Planner": PCT_FMT,
+            "Service_Level_Planned": PCT_FMT,
             "Service_Level_Delta": PCT_FMT,
         },
-        highlight_positive_cols=["Unmet_Tons_Max", "Unmet_Tons_Planner"],
+        highlight_positive_cols=["Unmet_Tons_Max", "Unmet_Tons_Planned"],
         alternating_fill=ALT_ROW_FILL,
     )
     _merge_row_span(ws, monthly_start_row - 1, 1, monthly_layout["end_col"])
@@ -2457,11 +2471,17 @@ def _write_capacity_basis_monthly_analysis(
         ws,
         f"A{monthly_layout['end_row'] + 2}",
         _text(
-            "Use the Year filter when needed. For ModeB, demand and Stage 1 stay shared, while differences come from Stage 2 overflow under Max vs Planner.",
+            "Use the Year filter when needed. This view compares the same scenario under Max and Planned capacity definitions month by month.",
             "如需只查看某一年的月度明细，请使用 Year 列的 Excel 筛选功能。",
         ),
     )
     _sync_sheet_header_width(ws, max(yearly_layout["end_col"], monthly_layout["end_col"]))
+    if _is_zh():
+        _write_note(
+            ws,
+            f"A{monthly_layout['end_row'] + 2}",
+            "如需只查看某一年的月度明细，请使用 Year 列的 Excel 筛选功能。本表按月比较同一场景在 Max 和 Planned 两种产能口径下的结果。",
+        )
     _autofit(ws)
     _set_monthly_trend_column_layout(ws)
 
@@ -2472,22 +2492,22 @@ def _write_capacity_basis_bottleneck_analysis(
     artifacts: dict[str, dict[str, Any]],
 ) -> None:
     ws = wb.create_sheet(_sheet_title("Bottleneck"))
-    _write_sheet_title(ws, _text(f"Bottleneck Analysis - {mode} | Max vs Planner", f"瓶颈分析 - {localize_mode(_lang(), mode)} | Max 对比 Planner"))
+    _write_sheet_title(ws, _text(f"Bottleneck Analysis - {mode} | Max vs Planned", f"瓶颈分析 - {localize_mode(_lang(), mode)} | Max 对比 Planned"))
 
     wc_max = artifacts["Max"]["analysis"]["wc_summary"].copy()
-    wc_planner = artifacts["Planner"]["analysis"]["wc_summary"].copy()
+    wc_planner = artifacts["Planned"]["analysis"]["wc_summary"].copy()
     wc_compare = wc_max.merge(
         wc_planner,
         on="WorkCenter",
         how="outer",
-        suffixes=("_Max", "_Planner"),
+        suffixes=("_Max", "_Planned"),
     ).fillna(0.0)
     if wc_compare.empty:
         ws["A3"] = _text("No workcenter load data is available for this result.", "当前结果没有可用的工作中心负载数据。")
         return
 
-    wc_compare["PeakLoad_Delta"] = wc_compare["PeakLoadPct_Planner"] - wc_compare["PeakLoadPct_Max"]
-    wc_compare["SortKey"] = wc_compare[["PeakLoadPct_Max", "PeakLoadPct_Planner"]].max(axis=1)
+    wc_compare["PeakLoad_Delta"] = wc_compare["PeakLoadPct_Planned"] - wc_compare["PeakLoadPct_Max"]
+    wc_compare["SortKey"] = wc_compare[["PeakLoadPct_Max", "PeakLoadPct_Planned"]].max(axis=1)
     wc_compare = wc_compare.sort_values(["SortKey", "WorkCenter"], ascending=[False, True]).head(15)
     ws["A2"] = _rt("top_bottleneck_workcenters")
     ws["A2"].fill = SUMMARY_FILL
@@ -2500,11 +2520,11 @@ def _write_capacity_basis_bottleneck_analysis(
             [
                 "WorkCenter",
                 "AvgLoadPct_Max",
-                "AvgLoadPct_Planner",
+                "AvgLoadPct_Planned",
                 "PeakLoadPct_Max",
-                "PeakLoadPct_Planner",
+                "PeakLoadPct_Planned",
                 "Over95Months_Max",
-                "Over95Months_Planner",
+                "Over95Months_Planned",
                 "PeakLoad_Delta",
             ]
         ],
@@ -2512,9 +2532,9 @@ def _write_capacity_basis_bottleneck_analysis(
         start_col=1,
         num_formats={
             "AvgLoadPct_Max": PCT_FMT,
-            "AvgLoadPct_Planner": PCT_FMT,
+            "AvgLoadPct_Planned": PCT_FMT,
             "PeakLoadPct_Max": PCT_FMT,
-            "PeakLoadPct_Planner": PCT_FMT,
+            "PeakLoadPct_Planned": PCT_FMT,
             "PeakLoad_Delta": PCT_FMT,
         },
         alternating_fill=ALT_ROW_FILL,
@@ -2540,8 +2560,8 @@ def _write_capacity_basis_heatmap(
     _write_sheet_title(
         ws,
         _text(
-            f"WorkCenter Heatmap - {mode} | Demand, Max Load%, Planner Load%",
-            f"工作中心热力图 - {localize_mode(_lang(), mode)} | 需求、Max 负载率、Planner 负载率",
+            f"WorkCenter Heatmap - {mode} | Demand, Max Load%, Planned Load%",
+            f"工作中心热力图 - {localize_mode(_lang(), mode)} | 需求、Max 负载率、Planned 负载率",
         ),
     )
 
@@ -2560,7 +2580,7 @@ def _write_capacity_basis_heatmap(
         ws["A3"] = _text("No heatmap data is available for this result.", "当前结果没有可用的热力图数据。")
         return
 
-    ranking_source = yearly_df[yearly_df["Metric"].isin(["Max Load%", "Planner Load%"])].copy()
+    ranking_source = yearly_df[yearly_df["Metric"].isin(["Max Load%", "Planned Load%"])].copy()
     period_cols = [column for column in yearly_df.columns if column not in {"WorkCenter", "Metric"}]
     if not ranking_source.empty and period_cols:
         ranking_source["SortKey"] = ranking_source[period_cols].max(axis=1)
@@ -2603,11 +2623,17 @@ def _write_capacity_basis_heatmap(
         ws,
         f"A{monthly_layout['end_row'] + 2}",
         _text(
-            "Demand rows follow the Planner-basis assigned tons. For ModeB, the load gap reflects Stage 2 overflow rerouting under Max vs Planner on top of a shared Stage 1 baseline.",
-            "Demand 行基于 Planner 口径下归属的吨位；Max Load% 和 Planner Load% 分别表示该工作中心需求相对两种产能口径的负载率。",
+            "Demand rows follow the Planned-basis assigned tons. Max Load% and Planned Load% show the same workcenter pressure under the two capacity definitions.",
+            "Demand 行基于 Planned 口径下归属的吨位；Max Load% 和 Planned Load% 分别表示该工作中心需求相对两种产能口径的负载率。",
         ),
     )
     _sync_sheet_header_width(ws, max(yearly_layout["end_col"], monthly_layout["end_col"]))
+    if _is_zh():
+        _write_note(
+            ws,
+            f"A{monthly_layout['end_row'] + 2}",
+            "Demand 行基于 Planned 口径下归属的吨位；Max Load% 和 Planned Load% 分别表示同一工作中心在 Max 和 Planned 两种产能口径下的负载率。",
+        )
     _autofit(ws)
 
 
@@ -2617,40 +2643,40 @@ def _write_capacity_basis_product_risk(
     artifacts: dict[str, dict[str, Any]],
 ) -> None:
     ws = wb.create_sheet(_sheet_title("Product_Risk"))
-    _write_sheet_title(ws, _text(f"Product Risk - {mode} | Max vs Planner", f"产品风险 - {localize_mode(_lang(), mode)} | Max 对比 Planner"))
+    _write_sheet_title(ws, _text(f"Product Risk - {mode} | Max vs Planned", f"产品风险 - {localize_mode(_lang(), mode)} | Max 对比 Planned"))
     _prepare_product_risk_sheet(ws)
 
     product_max = artifacts["Max"]["analysis"]["product_summary"].copy()
-    product_planner = artifacts["Planner"]["analysis"]["product_summary"].copy()
+    product_planner = artifacts["Planned"]["analysis"]["product_summary"].copy()
     product_compare = product_max.merge(
         product_planner,
         on=["Product", "ProductFamily", "Plant"],
         how="outer",
-        suffixes=("_Max", "_Planner"),
+        suffixes=("_Max", "_Planned"),
     ).fillna(0.0)
     if product_compare.empty:
         ws["A3"] = _text("No product comparison data is available for this result.", "当前结果没有可用的产品对比数据。")
         return
 
-    product_compare["Unmet_Delta"] = product_compare["Unmet_Tons_Planner"] - product_compare["Unmet_Tons_Max"]
-    product_compare["Service_Level_Delta"] = product_compare["Service_Level_Planner"] - product_compare["Service_Level_Max"]
-    product_compare["SortKey"] = product_compare[["Unmet_Tons_Max", "Unmet_Tons_Planner"]].max(axis=1)
+    product_compare["Unmet_Delta"] = product_compare["Unmet_Tons_Planned"] - product_compare["Unmet_Tons_Max"]
+    product_compare["Service_Level_Delta"] = product_compare["Service_Level_Planned"] - product_compare["Service_Level_Max"]
+    product_compare["SortKey"] = product_compare[["Unmet_Tons_Max", "Unmet_Tons_Planned"]].max(axis=1)
     product_compare = product_compare.sort_values(["SortKey", "Product"], ascending=[False, True]).head(20)
     display_columns = [
         "Product",
         "ProductFamily",
         "Plant",
         "Unmet_Tons_Max",
-        "Unmet_Tons_Planner",
+        "Unmet_Tons_Planned",
         "Service_Level_Max",
-        "Service_Level_Planner",
+        "Service_Level_Planned",
         "Unmet_Delta",
         "Service_Level_Delta",
         "Demand_Tons_Max",
         "Internal_Tons_Max",
-        "Internal_Tons_Planner",
+        "Internal_Tons_Planned",
         "Outsourced_Tons_Max",
-        "Outsourced_Tons_Planner",
+        "Outsourced_Tons_Planned",
     ]
     layout = _write_table(
         ws,
@@ -2660,13 +2686,13 @@ def _write_capacity_basis_product_risk(
         num_formats={
             "Demand_Tons_Max": TONS_FMT,
             "Internal_Tons_Max": TONS_FMT,
-            "Internal_Tons_Planner": TONS_FMT,
+            "Internal_Tons_Planned": TONS_FMT,
             "Outsourced_Tons_Max": TONS_FMT,
-            "Outsourced_Tons_Planner": TONS_FMT,
+            "Outsourced_Tons_Planned": TONS_FMT,
             "Unmet_Tons_Max": TONS_FMT,
-            "Unmet_Tons_Planner": TONS_FMT,
+            "Unmet_Tons_Planned": TONS_FMT,
             "Service_Level_Max": PCT_FMT,
-            "Service_Level_Planner": PCT_FMT,
+            "Service_Level_Planned": PCT_FMT,
             "Unmet_Delta": TONS_FMT,
             "Service_Level_Delta": PCT_FMT,
         },
@@ -2678,9 +2704,9 @@ def _write_capacity_basis_product_risk(
         layout,
         [
             "Unmet_Tons_Max",
-            "Unmet_Tons_Planner",
+            "Unmet_Tons_Planned",
             "Service_Level_Max",
-            "Service_Level_Planner",
+            "Service_Level_Planned",
             "Unmet_Delta",
             "Service_Level_Delta",
         ],
@@ -2698,39 +2724,39 @@ def _write_capacity_basis_planner_summary(
     ws = wb.create_sheet(_sheet_title("Planner_Result_Summary"))
     _prepare_planner_summary_sheet(
         ws,
-        title=_text(f"Planner Result Summary - {mode} | Max vs Planner", f"计划员结果汇总 - {localize_mode(_lang(), mode)} | Max 对比 Planner"),
+        title=_text(f"Planner Result Summary - {mode} | Max vs Planned", f"计划员结果汇总 - {localize_mode(_lang(), mode)} | Max 对比 Planned"),
         subtitle=_text(
-            "Risk-first planner comparison across Max and Planner capacity baselines.",
-            "以风险优先的方式比较同一计划员在 Max 与 Planner 两种产能口径下的结果。",
+            "Risk-first planner comparison across Max and Planned capacity baselines.",
+            "以风险优先的方式比较同一计划员在 Max 与 Planned 两种产能口径下的结果。",
         ),
         compare_mode=True,
     )
 
     planner_max = artifacts["Max"]["analysis"]["planner_summary"].copy()
-    planner_planner = artifacts["Planner"]["analysis"]["planner_summary"].copy()
+    planner_planner = artifacts["Planned"]["analysis"]["planner_summary"].copy()
     planner_compare = planner_max.merge(
         planner_planner,
         on="PlannerName",
         how="outer",
-        suffixes=("_Max", "_Planner"),
+        suffixes=("_Max", "_Planned"),
     ).fillna(0.0)
     if planner_compare.empty:
         ws["A3"] = _text("No planner summary is available for this result.", "当前结果没有可用的计划员汇总数据。")
         return
 
-    planner_compare["Service_Level_Delta"] = planner_compare["Service_Level_Planner"] - planner_compare["Service_Level_Max"]
-    planner_compare = planner_compare.sort_values(["Unmet_Tons_Planner", "PlannerName"], ascending=[False, True])
+    planner_compare["Service_Level_Delta"] = planner_compare["Service_Level_Planned"] - planner_compare["Service_Level_Max"]
+    planner_compare = planner_compare.sort_values(["Unmet_Tons_Planned", "PlannerName"], ascending=[False, True])
     display_columns = [
         "PlannerName",
         "Unmet_Tons_Max",
-        "Unmet_Tons_Planner",
+        "Unmet_Tons_Planned",
         "Service_Level_Max",
-        "Service_Level_Planner",
+        "Service_Level_Planned",
         "Demand_Tons_Max",
         "Outsourced_Tons_Max",
-        "Outsourced_Tons_Planner",
+        "Outsourced_Tons_Planned",
         "Internal_Tons_Max",
-        "Internal_Tons_Planner",
+        "Internal_Tons_Planned",
     ]
     layout = _write_table(
         ws,
@@ -2740,13 +2766,13 @@ def _write_capacity_basis_planner_summary(
         num_formats={
             "Demand_Tons_Max": TONS_FMT,
             "Internal_Tons_Max": TONS_FMT,
-            "Internal_Tons_Planner": TONS_FMT,
+            "Internal_Tons_Planned": TONS_FMT,
             "Outsourced_Tons_Max": TONS_FMT,
-            "Outsourced_Tons_Planner": TONS_FMT,
+            "Outsourced_Tons_Planned": TONS_FMT,
             "Unmet_Tons_Max": TONS_FMT,
-            "Unmet_Tons_Planner": TONS_FMT,
+            "Unmet_Tons_Planned": TONS_FMT,
             "Service_Level_Max": PCT_FMT,
-            "Service_Level_Planner": PCT_FMT,
+            "Service_Level_Planned": PCT_FMT,
         },
         alternating_fill=ALT_ROW_FILL,
         freeze="A4",
@@ -2756,19 +2782,25 @@ def _write_capacity_basis_planner_summary(
         layout,
         [
             "Unmet_Tons_Max",
-            "Unmet_Tons_Planner",
+            "Unmet_Tons_Planned",
             "Service_Level_Max",
-            "Service_Level_Planner",
+            "Service_Level_Planned",
         ],
     )
     _write_note(
         ws,
         f"A{layout['end_row'] + 2}",
         _text(
-            "This planner comparison keeps planner traceability while showing how planner outcomes shift under Max vs Planner. In ModeB, the shared Stage 1 baseline stays fixed and the difference comes from Stage 2 overflow.",
+            "This planner comparison keeps planner traceability while showing how outcomes shift under Max vs Planned capacity definitions.",
             "该计划员对比表在保留 planner 可追溯性的同时，展示产能口径变化如何影响每位计划员的内部供应、外协和剩余未满足。",
         ),
     )
+    if _is_zh():
+        _write_note(
+            ws,
+            f"A{layout['end_row'] + 2}",
+            "该计划员对比表在保留 planner 可追溯性的同时，展示同一 planner 在 Max 和 Planner 两种产能口径下内部分配、外协和未满足结果的变化。",
+        )
     _autofit(ws)
     _set_planner_summary_column_layout(ws, compare_mode=True)
 
@@ -2791,10 +2823,11 @@ def _write_summary_capacity_basis_pages(
                 payload["routings"],
                 config,
                 months,
-                basis,
+                run_mode=mode,
+                report_label=basis,
                 unmet_capacities=(payload.get("unmet_capacities_by_basis") or {}).get(basis),
             )
-            for basis in ("Max", "Planner")
+            for basis in ("Max", "Planned")
         }
         _write_capacity_basis_dashboard(
             wb,
@@ -2817,7 +2850,7 @@ def _write_summary_capacity_basis_pages(
 
 def _concat_basis_detail_frames(artifacts: dict[str, dict[str, Any]]) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
-    for basis in ("Max", "Planner"):
+    for basis in ("Max", "Planned"):
         frame = artifacts[basis]["df_detail"].copy()
         frame.insert(0, "Capacity_Basis", basis)
         if "Month" in frame.columns and "Year" not in frame.columns:
@@ -2828,7 +2861,7 @@ def _concat_basis_detail_frames(artifacts: dict[str, dict[str, Any]]) -> pd.Data
 
 def _concat_basis_planner_product_month_frames(artifacts: dict[str, dict[str, Any]]) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
-    for basis in ("Max", "Planner"):
+    for basis in ("Max", "Planned"):
         frame = artifacts[basis]["analysis"].get("planner_product_month_summary", pd.DataFrame()).copy()
         if frame.empty:
             continue
@@ -2840,7 +2873,7 @@ def _concat_basis_planner_product_month_frames(artifacts: dict[str, dict[str, An
 
 def _concat_basis_wc_load_frames(artifacts: dict[str, dict[str, Any]]) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
-    for basis in ("Max", "Planner"):
+    for basis in ("Max", "Planned"):
         frame = artifacts[basis]["wc_load_df"].copy()
         if frame.empty:
             continue
@@ -2851,7 +2884,7 @@ def _concat_basis_wc_load_frames(artifacts: dict[str, dict[str, Any]]) -> pd.Dat
 
 def _concat_basis_run_info_frames(artifacts: dict[str, dict[str, Any]]) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
-    for basis in ("Max", "Planner"):
+    for basis in ("Max", "Planned"):
         frame = artifacts[basis]["run_info_df"].copy()
         if frame.empty:
             continue

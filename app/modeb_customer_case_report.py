@@ -9,12 +9,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
-from app.data_loader import load_direct_mode_b_with_capacity_bases
+from app.capacity_basis import PLANNED_BASIS, normalize_capacity_basis
+from app.data_loader import load_direct_mode_a_with_capacity_bases, load_direct_mode_b_with_capacity_bases
 from app.i18n import localize_column_name, localize_sheet_name, localize_value
 from app.models import LoadRecord
 from app.runtime_paths import RuntimePaths, resolve_runtime_paths, with_workspace_dir
@@ -22,6 +24,7 @@ from app.runtime_paths import RuntimePaths, resolve_runtime_paths, with_workspac
 
 DEFAULT_OUTPUT_NAME = "product_analysis.xlsx"
 DEFAULT_MAX_PRODUCTS = 10
+SUPPORTED_REPORT_MODES = ("ModeA", "ModeB")
 
 THIN = Side(style="thin", color="D9D9D9")
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
@@ -56,12 +59,14 @@ TABLE_HEADER_LABELS = {
     "Month_Span": "月份范围",
     "Record_Count": "记录数",
     "WorkCenter": "工作中心",
-    "Annual_Capacity_Tons": "年产能吨位",
-    "Monthly_Capacity_Tons": "月产能吨位",
+    "Annual_Max_Capacity_Tons": "Annual Max 产能吨位",
+    "Annual_Planned_Capacity_Tons": "Annual Planned 产能吨位",
+    "Monthly_Max_Capacity_Tons": "Monthly Max 产能吨位",
+    "Monthly_Planned_Capacity_Tons": "Monthly Planned 产能吨位",
     "Utilization_Target": "Utilization_Target",
     "Route_Type": "路径类型",
     "Max_Capacity_Tons": "Max 产能吨位",
-    "Planner_Capacity_Tons": "Planner 产能吨位",
+    "Planned_Capacity_Tons": "Planned 产能吨位",
     "Eligible_Flag": "Eligible 标记",
     "Allocation_Source": "分配来源",
     "Internal_Tons": "内部承接吨位",
@@ -84,6 +89,7 @@ ROUTE_TYPE_LABELS = {
 }
 
 ALLOCATION_SOURCE_LABELS = {
+    "ModeA_Internal": "ModeA 内部分配",
     "Capacity_Base": "Capacity_Base",
     "Routing_Reroute": "Routing_Reroute",
     "ModeB_Internal": "ModeB 内部分配",
@@ -91,6 +97,7 @@ ALLOCATION_SOURCE_LABELS = {
 }
 
 WC_ROLE_LABELS = {
+    "ModeA_Internal_WC": "ModeA 内部分配 WC",
     "Capacity_Base": "ModeB Capacity_Base WC",
     "Routing_Reroute": "ModeB Routing_Reroute WC",
     "ModeB_Toller_Route": "ModeB Toller 路径",
@@ -133,15 +140,16 @@ class ReportValidationError(ValueError):
 
 
 @dataclass(frozen=True)
-class ModeBReportSelection:
+class ModeReportSelection:
     selected_path: Path
     latest_path: Path | None
     is_latest: bool
 
 
 @dataclass(frozen=True)
-class ModeBReportContext:
+class ModeReportContext:
     report_path: Path
+    report_mode: str
     scenario_name: str
     run_timestamp: str | None
     input_load_folder: Path | None
@@ -149,6 +157,10 @@ class ModeBReportContext:
     output_folder: Path | None
     available_bases: tuple[str, ...]
     detail_rows: tuple[dict[str, Any], ...]
+
+
+ModeBReportSelection = ModeReportSelection
+ModeBReportContext = ModeReportContext
 
 
 @dataclass(frozen=True)
@@ -249,7 +261,7 @@ def _read_detail_rows(workbook_path: Path) -> tuple[tuple[dict[str, Any], ...], 
     try:
         detail_sheet_name = _find_sheet_name(workbook.sheetnames, "Allocation_Detail")
         if not detail_sheet_name:
-            raise ReportValidationError("所选文件缺少 Allocation_Detail/分配明细 sheet，无法作为 ModeB 报告分析。")
+            raise ReportValidationError("所选文件缺少 Allocation_Detail/分配明细 sheet，无法作为单模式报告分析。")
         ws = workbook[detail_sheet_name]
         row_iter = ws.iter_rows(min_row=3, values_only=True)
         try:
@@ -301,7 +313,7 @@ def _read_run_info(workbook_path: Path) -> dict[str, Any]:
                 if parameter_text and parameter_text not in info:
                     info[parameter_text] = value
                 if basis not in (None, "") and parameter_text:
-                    info.setdefault("by_basis", {}).setdefault(str(basis), {})[parameter_text] = value
+                    info.setdefault("by_basis", {}).setdefault(normalize_capacity_basis(str(basis)), {})[parameter_text] = value
             else:
                 parameter = row[0] if len(row) > 0 else None
                 value = row[1] if len(row) > 1 else None
@@ -315,40 +327,47 @@ def _read_run_info(workbook_path: Path) -> dict[str, Any]:
         workbook.close()
 
 
-def _looks_like_modeb_output_name(path: Path) -> bool:
+def _looks_like_mode_output_name(path: Path, report_mode: str) -> bool:
     name = path.name.lower()
-    return name.startswith("capacity_result_modeb_") and name.endswith(".xlsx")
+    return name.startswith(f"capacity_result_{report_mode.lower()}_") and name.endswith(".xlsx")
 
 
-def find_latest_modeb_report(output_dir: str | Path) -> Path | None:
+def find_latest_mode_report(output_dir: str | Path, report_mode: str) -> Path | None:
     output_path = Path(output_dir)
     if not output_path.exists():
         return None
     candidates = [
         path
         for path in output_path.glob("*.xlsx")
-        if path.is_file() and not path.name.startswith("~$") and _looks_like_modeb_output_name(path)
+        if path.is_file()
+        and not path.name.startswith("~$")
+        and _looks_like_mode_output_name(path, report_mode)
     ]
     if not candidates:
         return None
     return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
-def resolve_modeb_report_selection(
+def find_latest_modeb_report(output_dir: str | Path) -> Path | None:
+    return find_latest_mode_report(output_dir, "ModeB")
+
+
+def resolve_mode_report_selection(
     *,
     output_dir: str | Path,
     manual_report_path: str | Path | None,
     use_latest_report: bool,
-) -> ModeBReportSelection:
-    latest_path = find_latest_modeb_report(output_dir)
+    report_mode: str,
+) -> ModeReportSelection:
+    latest_path = find_latest_mode_report(output_dir, report_mode)
     if use_latest_report:
         if latest_path is None:
-            raise FileNotFoundError("当前 output 目录下没有可用的 ModeB 输出报告。")
-        return ModeBReportSelection(selected_path=latest_path, latest_path=latest_path, is_latest=True)
+            raise FileNotFoundError(f"当前 output 目录下没有可用的 {report_mode} 输出报告。")
+        return ModeReportSelection(selected_path=latest_path, latest_path=latest_path, is_latest=True)
 
     manual_text = str(manual_report_path or "").strip()
     if not manual_text:
-        raise FileNotFoundError("请输入 ModeB 报告文件路径或文件名。")
+        raise FileNotFoundError(f"请输入 {report_mode} 报告文件路径或文件名。")
 
     raw_path = Path(manual_text).expanduser()
     search_candidates = [raw_path]
@@ -364,31 +383,72 @@ def resolve_modeb_report_selection(
         raise FileNotFoundError(f"未找到指定的报告文件：{manual_text}")
 
     is_latest = latest_path is not None and resolved_path == latest_path.resolve()
-    return ModeBReportSelection(selected_path=resolved_path, latest_path=latest_path, is_latest=is_latest)
+    return ModeReportSelection(selected_path=resolved_path, latest_path=latest_path, is_latest=is_latest)
+
+def resolve_modeb_report_selection(
+    *,
+    output_dir: str | Path,
+    manual_report_path: str | Path | None,
+    use_latest_report: bool,
+) -> ModeBReportSelection:
+    return resolve_mode_report_selection(
+        output_dir=output_dir,
+        manual_report_path=manual_report_path,
+        use_latest_report=use_latest_report,
+        report_mode="ModeB",
+    )
 
 
-def load_modeb_report_context(report_path: str | Path) -> ModeBReportContext:
+def _infer_report_mode_from_name(report_file: Path) -> str | None:
+    name = report_file.name.lower()
+    if name.startswith("capacity_result_modea_"):
+        return "ModeA"
+    if name.startswith("capacity_result_modeb_"):
+        return "ModeB"
+    if name.startswith("summary of mode a and mode b_"):
+        return "Both"
+    return None
+
+
+def _infer_report_mode_from_detail_rows(detail_rows: Sequence[dict[str, Any]]) -> str:
+    for row in detail_rows:
+        source = str(row.get("Allocation_Source") or "").strip()
+        route_type = str(row.get("RouteType") or "").strip()
+        if source in {"Capacity_Base", "Routing_Reroute", "Toller"}:
+            return "ModeB"
+        if route_type in {"Primary", "Alternative", "Toller"}:
+            return "ModeB"
+    return "ModeA"
+
+
+def load_mode_report_context(report_path: str | Path, *, expected_mode: str | None = None) -> ModeReportContext:
     report_file = Path(report_path).expanduser().resolve()
     if not report_file.exists():
         raise FileNotFoundError(f"报告文件不存在：{report_file}")
     if report_file.name.startswith("~$"):
         raise ReportValidationError("当前选择的是 Excel 临时锁文件，请选择正式的 .xlsx 报告。")
     detail_rows, detail_headers = _read_detail_rows(report_file)
-    required_headers = {"Product", "AllocationType", "WorkCenter", "Demand_Tons", "Allocation_Source"}
+    required_headers = {"Product", "AllocationType", "WorkCenter", "Demand_Tons"}
     if not required_headers.issubset(set(detail_headers)):
-        raise ReportValidationError("所选文件不是有效的 ModeB 输出报告：分配明细缺少 ModeB 需要的关键列。")
+        raise ReportValidationError("所选文件不是有效的单模式结果报告：分配明细缺少关键列。")
 
     run_info = _read_run_info(report_file)
+    actual_mode = _infer_report_mode_from_name(report_file) or _infer_report_mode_from_detail_rows(detail_rows)
+    if actual_mode == "Both":
+        raise ReportValidationError("该工具只支持 ModeA 或 ModeB 单报告，不支持 Both 汇总报告。")
+    if expected_mode and actual_mode != expected_mode:
+        raise ReportValidationError(f"当前文件属于 {actual_mode}，与所选的 {expected_mode} 不一致。")
     available_bases = sorted(
         {
-            str(row.get("Capacity_Basis") or "ModeB").strip()
+            normalize_capacity_basis(str(row.get("Capacity_Basis") or PLANNED_BASIS).strip())
             for row in detail_rows
-            if str(row.get("Capacity_Basis") or "ModeB").strip()
+            if str(row.get("Capacity_Basis") or "").strip()
         }
-    ) or ["ModeB"]
+    ) or [PLANNED_BASIS]
 
-    return ModeBReportContext(
+    return ModeReportContext(
         report_path=report_file,
+        report_mode=actual_mode,
         scenario_name=str(run_info.get("Scenario_Name") or "").strip(),
         run_timestamp=str(run_info.get("Run_Timestamp") or "").strip() or None,
         input_load_folder=Path(run_info["Input_Load_Folder"]).resolve() if run_info.get("Input_Load_Folder") else None,
@@ -397,6 +457,10 @@ def load_modeb_report_context(report_path: str | Path) -> ModeBReportContext:
         available_bases=tuple(available_bases),
         detail_rows=detail_rows,
     )
+
+
+def load_modeb_report_context(report_path: str | Path) -> ModeBReportContext:
+    return load_mode_report_context(report_path, expected_mode="ModeB")
 
 
 def infer_workspace_root_from_report(report_path: str | Path) -> Path | None:
@@ -413,8 +477,30 @@ def _resolve_input_folder(candidate: Path | None, fallback: Path) -> Path:
     return fallback
 
 
+def _find_tabular_file(folder: Path, stem: str, *, required: bool = True) -> Path | None:
+    for ext in (".xlsx", ".xls", ".csv"):
+        path = folder / f"{stem}{ext}"
+        if path.exists():
+            return path
+    if required:
+        raise FileNotFoundError(f"未找到 {stem} 文件：{folder}")
+    return None
+
+
+def _read_tabular_rows(path: Path) -> list[dict[str, Any]]:
+    suffix = path.suffix.lower()
+    if suffix in {".xlsx", ".xls"}:
+        df = pd.read_excel(path, header=0)
+    elif suffix == ".csv":
+        df = pd.read_csv(path, encoding="utf-8-sig")
+    else:
+        raise ValueError(f"不支持的文件类型：{path}")
+    df.columns = [str(column).strip() for column in df.columns]
+    return df.fillna("").to_dict(orient="records")
+
+
 def load_supporting_input_data(
-    context: ModeBReportContext,
+    context: ModeReportContext,
     runtime_paths: RuntimePaths | None = None,
 ) -> SupportingInputData:
     resolved_paths = runtime_paths or resolve_runtime_paths()
@@ -423,13 +509,23 @@ def load_supporting_input_data(
     master_folder = _resolve_input_folder(context.input_master_folder, default_input_dir)
     scenario_name = context.scenario_name or "Baseline"
 
-    loads, _baseline_capacities, _raw_capacities_by_basis, _routings = load_direct_mode_b_with_capacity_bases(
-        str(load_folder),
-        str(master_folder),
-        selected_scenario=scenario_name,
-    )
-    raw_capacity_rows = _read_csv_rows(master_folder / "master_capacity.csv")
-    raw_routing_rows = _read_csv_rows(master_folder / "master_routing.csv")
+    if context.report_mode == "ModeA":
+        loads, _capacity_bases, _ = load_direct_mode_a_with_capacity_bases(
+            str(load_folder),
+            str(master_folder),
+            selected_scenario=scenario_name,
+        )
+        raw_routing_rows: list[dict[str, Any]] = []
+    else:
+        loads, _baseline_capacities_by_basis, _capacities_by_basis, _routings = load_direct_mode_b_with_capacity_bases(
+            str(load_folder),
+            str(master_folder),
+            selected_scenario=scenario_name,
+        )
+        routing_path = _find_tabular_file(master_folder, "master_routing", required=False)
+        raw_routing_rows = _read_tabular_rows(routing_path) if routing_path else []
+    capacity_path = _find_tabular_file(master_folder, "master_capacity", required=True)
+    raw_capacity_rows = _read_tabular_rows(capacity_path)
     return SupportingInputData(
         load_folder=load_folder,
         master_folder=master_folder,
@@ -440,7 +536,8 @@ def load_supporting_input_data(
 
 
 def _basis_key(row: dict[str, Any]) -> str:
-    return str(row.get("Capacity_Basis") or "ModeB").strip() or "ModeB"
+    raw_basis = str(row.get("Capacity_Basis") or PLANNED_BASIS).strip() or PLANNED_BASIS
+    return normalize_capacity_basis(raw_basis)
 
 
 def _product_metrics(detail_rows: Sequence[dict[str, Any]]) -> dict[tuple[str, str], ProductMetrics]:
@@ -464,7 +561,7 @@ def _product_metrics(detail_rows: Sequence[dict[str, Any]]) -> dict[tuple[str, s
         if allocation_type == "Internal":
             metric.internal += float(row.get("Allocated_Tons") or 0.0)
             source = str(row.get("Allocation_Source") or "").strip()
-            if source == "Capacity_Base":
+            if source in {"", "Capacity_Base", "ModeA_Internal"}:
                 metric.capacity_base += float(row.get("Allocated_Tons") or 0.0)
             elif source == "Routing_Reroute":
                 metric.routing_reroute += float(row.get("Allocated_Tons") or 0.0)
@@ -482,7 +579,7 @@ def _internal_by_product_wc_and_source(detail_rows: Sequence[dict[str, Any]]) ->
             continue
         basis = _basis_key(row)
         product = str(row.get("Product") or "").strip()
-        source = str(row.get("Allocation_Source") or "").strip() or "ModeB_Internal"
+        source = str(row.get("Allocation_Source") or "").strip() or "ModeA_Internal"
         wc = str(row.get("WorkCenter") or "").strip()
         totals[(basis, product, source, wc)] += float(row.get("Allocated_Tons") or 0.0)
     return totals
@@ -571,13 +668,20 @@ def _master_capacity_rows(raw_capacity_rows: Sequence[dict[str, str]], product: 
     for row in raw_capacity_rows:
         if str(row.get("Product", "")).strip() != product:
             continue
-        annual_capacity = float(row.get("Annual Capacity Tons", 0) or 0.0)
+        annual_max_capacity = float(
+            row.get("Annual Max Capacity Tons", row.get("Annual Capacity Tons", 0)) or 0.0
+        )
+        annual_planned_capacity = float(
+            row.get("Annual Planned Capacity Tons", row.get("Annual Planner Capacity Tons", row.get("Annual Capacity Tons", 0))) or 0.0
+        )
         rows.append(
             {
                 "Source_File": "master_capacity.csv",
-                "WorkCenter": str(row.get("Resource", "")).strip(),
-                "Annual_Capacity_Tons": annual_capacity,
-                "Monthly_Capacity_Tons": annual_capacity / 12.0,
+                "WorkCenter": str(row.get("WorkCenter", row.get("Resource", ""))).strip(),
+                "Annual_Max_Capacity_Tons": annual_max_capacity,
+                "Annual_Planned_Capacity_Tons": annual_planned_capacity,
+                "Monthly_Max_Capacity_Tons": annual_max_capacity / 12.0,
+                "Monthly_Planned_Capacity_Tons": annual_planned_capacity / 12.0,
                 "Utilization_Target": str(row.get("Utilization Target", "")).strip(),
             }
         )
@@ -592,17 +696,25 @@ def _master_routing_rows(raw_routing_rows: Sequence[dict[str, str]], product: st
         rows.append(
             {
                 "Source_File": "master_routing.csv",
-                "WorkCenter": str(row.get("Resource", "")).strip(),
+                "WorkCenter": str(row.get("WorkCenter", row.get("Resource", ""))).strip(),
                 "Route_Type": _route_type_label(str(row.get("Router Type", "")).strip()),
                 "Max_Capacity_Tons": float(row.get("Max Capacity Ton", 0) or 0.0),
-                "Planner_Capacity_Tons": float(row.get("Planner Capacity Ton", 0) or 0.0),
+                "Planned_Capacity_Tons": float(
+                    row.get("Planned Capacity Ton", row.get("Planner Capacity Ton", 0)) or 0.0
+                ),
                 "Eligible_Flag": str(row.get("EligibleFalg", "")).strip(),
             }
         )
     return rows
 
 
-def _case_type_label(metric: ProductMetrics) -> str:
+def _case_type_label(report_mode: str, metric: ProductMetrics) -> str:
+    if report_mode == "ModeA":
+        if metric.unmet <= 0:
+            return "全部由 capacity 消化"
+        if metric.capacity_base > 0:
+            return "capacity 吃掉一部分，剩余进入 unmet"
+        return "没有可用 capacity，全部进入 unmet"
     if metric.routing_reroute <= 0 and metric.outsourced <= 0 and metric.unmet <= 0:
         return "全部由 baseline capacity 消化"
     if metric.routing_reroute > 0 and metric.outsourced <= 0 and metric.unmet <= 0:
@@ -617,6 +729,7 @@ def _case_type_label(metric: ProductMetrics) -> str:
 
 
 def _overview_rows(
+    report_mode: str,
     products: Sequence[str],
     bases: Sequence[str],
     loads: Sequence[LoadRecord],
@@ -633,14 +746,14 @@ def _overview_rows(
     for product in products:
         cap_wcs = sorted(
             {
-                str(row.get("Resource", "")).strip()
+                str(row.get("WorkCenter", row.get("Resource", ""))).strip()
                 for row in raw_capacity_rows
                 if str(row.get("Product", "")).strip() == product
             }
         )
         routing_wcs = sorted(
             {
-                str(row.get("Resource", "")).strip()
+                str(row.get("WorkCenter", row.get("Resource", ""))).strip()
                 for row in raw_routing_rows
                 if str(row.get("Product", "")).strip() == product
                 and str(row.get("Router Type", "")).strip().lower() != "toller"
@@ -648,7 +761,7 @@ def _overview_rows(
         )
         toller_wcs = sorted(
             {
-                str(row.get("Resource", "")).strip()
+                str(row.get("WorkCenter", row.get("Resource", ""))).strip()
                 for row in raw_routing_rows
                 if str(row.get("Product", "")).strip() == product
                 and str(row.get("Router Type", "")).strip().lower() == "toller"
@@ -659,7 +772,7 @@ def _overview_rows(
             rows.append(
                 {
                     "Product": product,
-                    "Case_Description": _case_type_label(metric),
+                    "Case_Description": _case_type_label(report_mode, metric),
                     "Capacity_Basis": basis,
                     "Demand_Tons": metric.demand,
                     "Capacity_Base_Tons": metric.capacity_base,
@@ -668,21 +781,26 @@ def _overview_rows(
                     "Unmet_Tons": metric.unmet,
                     "Planner_Source_File": planner_source_lookup.get(product, "（无）"),
                     "Master_Capacity_WC": " | ".join(cap_wcs) or "（无）",
-                    "Master_Routing_WC": " | ".join(routing_wcs) or "（无）",
-                    "Toller_WC": " | ".join(toller_wcs) or "（无）",
+                    "Master_Routing_WC": " | ".join(routing_wcs) if report_mode == "ModeB" else "（不适用）",
+                    "Toller_WC": " | ".join(toller_wcs) if report_mode == "ModeB" else "（不适用）",
                 }
             )
     return rows
 
 
-def _basis_summary_rows(product: str, bases: Sequence[str], metrics: dict[tuple[str, str], ProductMetrics]) -> list[dict[str, Any]]:
+def _basis_summary_rows(
+    report_mode: str,
+    product: str,
+    bases: Sequence[str],
+    metrics: dict[tuple[str, str], ProductMetrics],
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for basis in bases:
         metric = metrics[(basis, product)]
         rows.append(
             {
                 "Capacity_Basis": basis,
-                "Case_Description": _case_type_label(metric),
+                "Case_Description": _case_type_label(report_mode, metric),
                 "Demand_Tons": metric.demand,
                 "Capacity_Base_Tons": metric.capacity_base,
                 "Routing_Reroute_Tons": metric.routing_reroute,
@@ -905,6 +1023,11 @@ def _normalize_products(products: Sequence[str]) -> list[str]:
     return normalized
 
 
+def _sheet_name_for_product(index: int, product: str) -> str:
+    safe = "".join("_" if ch in '[]:*?/\\\\' else ch for ch in product)
+    return f"{index}_{safe}"[:31]
+
+
 def _build_output_path(output_dir: Path, output_name: str) -> Path:
     base_name = Path(output_name or DEFAULT_OUTPUT_NAME).name
     if not base_name.lower().endswith(".xlsx"):
@@ -918,13 +1041,16 @@ def generate_modeb_customer_case_report(
     *,
     report_path: str | Path,
     products: Sequence[str],
+    report_mode: str = "ModeB",
     output_dir: str | Path | None = None,
     output_name: str = DEFAULT_OUTPUT_NAME,
     runtime_paths: RuntimePaths | None = None,
     latest_report_path: str | Path | None = None,
 ) -> Path:
+    if report_mode not in SUPPORTED_REPORT_MODES:
+        raise ReportValidationError(f"不支持的报告模式：{report_mode}")
     normalized_products = _normalize_products(products)
-    context = load_modeb_report_context(report_path)
+    context = load_mode_report_context(report_path, expected_mode=report_mode)
     if runtime_paths is None:
         base_paths = resolve_runtime_paths()
         inferred_workspace_root = infer_workspace_root_from_report(context.report_path) or base_paths.user_workspace_dir
@@ -938,7 +1064,7 @@ def generate_modeb_customer_case_report(
     report_products = {str(row.get("Product") or "").strip() for row in context.detail_rows}
     missing_products = [product for product in normalized_products if product not in report_products]
     if missing_products:
-        raise ReportValidationError(f"以下产品不在所选 ModeB 报告中：{', '.join(missing_products)}")
+        raise ReportValidationError(f"以下产品不在所选 {context.report_mode} 报告中：{', '.join(missing_products)}")
 
     metrics = _product_metrics(context.detail_rows)
     internal_totals = _internal_by_product_wc_and_source(context.detail_rows)
@@ -951,7 +1077,7 @@ def generate_modeb_customer_case_report(
     workbook.remove(workbook.active)
 
     summary_ws = workbook.create_sheet("总览")
-    _style_title(summary_ws, 1, "ModeB 产品分析报告", 14)
+    _style_title(summary_ws, 1, f"{context.report_mode} 产品分析报告", 14)
     note_lines = [
         f"分析对象报告：{context.report_path}",
         f"场景：{context.scenario_name or '（未写入）'}",
@@ -962,10 +1088,11 @@ def generate_modeb_customer_case_report(
     if latest_report_path:
         latest_path = Path(latest_report_path).expanduser().resolve()
         if latest_path != context.report_path:
-            note_lines.append(f"注意：当前选择的不是最新 ModeB 报告。最新文件：{latest_path}")
+            note_lines.append(f"注意：当前选择的不是最新 {context.report_mode} 报告。最新文件：{latest_path}")
     _style_note(summary_ws, 2, "\n".join(note_lines), 14)
 
     overview_rows = _overview_rows(
+        context.report_mode,
         normalized_products,
         context.available_bases,
         supporting_input.loads,
@@ -988,18 +1115,18 @@ def generate_modeb_customer_case_report(
         },
     ) + 2
     _write_section(summary_ws, next_row, "阅读方法", 14)
-    summary_ws.cell(next_row + 1, 1).value = "1. 先看产品总览，判断该产品属于 baseline 消化、routing 消化、toller 消化，还是最终留下 unmet。"
+    summary_ws.cell(next_row + 1, 1).value = "1. 先看产品总览，确认该产品在当前模式下由 capacity、routing、外协、unmet 各承担了多少。"
     summary_ws.cell(next_row + 2, 1).value = "2. 再看单个产品页，确认需求来自哪个 planner 文件，以及 master_capacity / master_routing 给了哪些工作中心。"
     summary_ws.cell(next_row + 3, 1).value = "3. 最后看对应 Capacity_Basis 的工作中心上下文，理解该产品为什么会落到这些 WC，以及这些 WC 上还有哪些其他产品。"
 
     for sheet_index, product in enumerate(normalized_products, start=1):
-        sheet_name = f"{sheet_index}_{product}"[:31]
+        sheet_name = _sheet_name_for_product(sheet_index, product)
         ws = workbook.create_sheet(sheet_name)
-        _style_title(ws, 1, f"{product} - ModeB 产品分析", 12)
+        _style_title(ws, 1, f"{product} - {context.report_mode} 产品分析", 12)
         _style_note(
             ws,
             2,
-            "这张表把这个产品在 ModeB 报告里的结果，与对应的 planner 输入、master_capacity、master_routing 和工作中心上下文连在一起，方便直接解释。",
+            f"这张表把这个产品在 {context.report_mode} 报告里的结果，与对应的 planner 输入、master_capacity、master_routing 和工作中心上下文连在一起，方便直接解释。",
             12,
         )
 
@@ -1011,7 +1138,7 @@ def generate_modeb_customer_case_report(
         current_row = _write_table(
             ws=ws,
             start_row=current_row,
-            rows=_basis_summary_rows(product, context.available_bases, metrics),
+            rows=_basis_summary_rows(context.report_mode, product, context.available_bases, metrics),
             table_name=table_names.next(f"Summary{sheet_index}"),
             ton_columns={
                 "Demand_Tons",
@@ -1035,18 +1162,35 @@ def generate_modeb_customer_case_report(
         current_row = _write_table(
             ws=ws,
             start_row=current_row,
-            rows=capacity_rows or [{"Source_File": "master_capacity.csv", "WorkCenter": "（无）", "Annual_Capacity_Tons": 0.0, "Monthly_Capacity_Tons": 0.0, "Utilization_Target": ""}],
+            rows=capacity_rows or [{
+                "Source_File": "master_capacity.csv",
+                "WorkCenter": "（无）",
+                "Annual_Max_Capacity_Tons": 0.0,
+                "Annual_Planned_Capacity_Tons": 0.0,
+                "Monthly_Max_Capacity_Tons": 0.0,
+                "Monthly_Planned_Capacity_Tons": 0.0,
+                "Utilization_Target": "",
+            }],
             table_name=table_names.next(f"Cap{sheet_index}"),
-            ton_columns={"Annual_Capacity_Tons", "Monthly_Capacity_Tons"},
+            ton_columns={
+                "Annual_Max_Capacity_Tons",
+                "Annual_Planned_Capacity_Tons",
+                "Monthly_Max_Capacity_Tons",
+                "Monthly_Planned_Capacity_Tons",
+            },
         ) + 2
 
         current_row = _write_section(ws, current_row, "这个产品用到的 master_routing 行", 12)
         current_row = _write_table(
             ws=ws,
             start_row=current_row,
-            rows=routing_rows or [{"Source_File": "master_routing.csv", "WorkCenter": "（无）", "Route_Type": "没有 product-level routing", "Max_Capacity_Tons": 0.0, "Planner_Capacity_Tons": 0.0, "Eligible_Flag": ""}],
+            rows=(
+                routing_rows
+                if context.report_mode == "ModeB"
+                else [{"Source_File": "master_routing.csv", "WorkCenter": "（不适用）", "Route_Type": "ModeA 不使用 routing", "Max_Capacity_Tons": 0.0, "Planned_Capacity_Tons": 0.0, "Eligible_Flag": ""}]
+            ) or [{"Source_File": "master_routing.csv", "WorkCenter": "（无）", "Route_Type": "没有 product-level routing", "Max_Capacity_Tons": 0.0, "Planned_Capacity_Tons": 0.0, "Eligible_Flag": ""}],
             table_name=table_names.next(f"Route{sheet_index}"),
-            ton_columns={"Max_Capacity_Tons", "Planner_Capacity_Tons"},
+            ton_columns={"Max_Capacity_Tons", "Planned_Capacity_Tons"},
         ) + 2
 
         for basis in context.available_bases:
@@ -1092,7 +1236,7 @@ def generate_modeb_customer_case_report(
                 pct_columns={"Focus_Product_Share_of_WC_Pct"},
             ) + 2
 
-            if basis_metric.outsourced > 0:
+            if context.report_mode == "ModeB" and basis_metric.outsourced > 0:
                 current_row = _write_section(ws, current_row, f"{basis} Toller 路径上的其他产品", 12)
                 current_row = _write_table(
                     ws=ws,
@@ -1114,7 +1258,15 @@ def generate_modeb_customer_case_report(
                     ton_columns={"Focus_Product_Outsourced_Tons", "Other_Product_Outsourced_Tons"},
                 ) + 2
 
-            if not routing_rows:
+            if context.report_mode == "ModeA":
+                _style_note(
+                    ws,
+                    current_row,
+                    f"{context.report_mode} 不使用 routing。{basis} 下所有内部吨位都直接来自 master_capacity；若仍有剩余需求，则最终进入 unmet。",
+                    12,
+                )
+                current_row += 2
+            elif not routing_rows:
                 _style_note(
                     ws,
                     current_row,
@@ -1141,8 +1293,9 @@ def generate_modeb_customer_case_report(
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate a product analysis workbook from an existing ModeB output report.")
-    parser.add_argument("--report", required=True, help="Path to the ModeB output workbook.")
+    parser = argparse.ArgumentParser(description="Generate a product analysis workbook from an existing ModeA or ModeB output report.")
+    parser.add_argument("--report", required=True, help="Path to the ModeA or ModeB output workbook.")
+    parser.add_argument("--mode", choices=SUPPORTED_REPORT_MODES, default="ModeB")
     parser.add_argument("--product", action="append", dest="products", default=[], help="Product code to include. Repeat up to 10 times.")
     parser.add_argument("--output-dir", default=str(resolve_runtime_paths().outputs_dir))
     parser.add_argument("--output-name", default=DEFAULT_OUTPUT_NAME)
@@ -1154,6 +1307,7 @@ def main() -> None:
     output_path = generate_modeb_customer_case_report(
         report_path=args.report,
         products=args.products,
+        report_mode=args.mode,
         output_dir=args.output_dir,
         output_name=args.output_name,
     )

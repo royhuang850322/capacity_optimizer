@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("CapacityOptimizer", "ModeBProductAnalysis", "All")]
+    [ValidateSet("CapacityOptimizer", "ModeBProductAnalysis", "WorkCenterAnalysis", "All")]
     [string]$Target = "CapacityOptimizer",
     [switch]$Clean,
     [switch]$CreateZip,
@@ -25,6 +25,12 @@ $Targets = @(
         SpecPath = Join-Path $ScriptDir "ModeBProductAnalysis.spec"
         ResourceSubpaths = @()
         ArchivePrefix = "ModeBProductAnalysis-companion"
+    },
+    @{
+        Name = "WorkCenterAnalysis"
+        SpecPath = Join-Path $ScriptDir "WorkCenterAnalysis.spec"
+        ResourceSubpaths = @()
+        ArchivePrefix = "WorkCenterAnalysis-companion"
     }
 )
 

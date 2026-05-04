@@ -1,4 +1,4 @@
-"""Standalone desktop launcher for ModeB product analysis reports."""
+"""Standalone desktop launcher for workcenter analysis reports."""
 from __future__ import annotations
 
 import json
@@ -7,15 +7,15 @@ from datetime import datetime
 from pathlib import Path
 
 from app.desktop_launcher import LIGHT_QSS
-from app.modeb_customer_case_report import (
+from app.runtime_paths import RuntimePaths, resolve_runtime_paths, with_workspace_dir
+from app.version import APP_VERSION
+from app.workcenter_analysis_report import (
     DEFAULT_OUTPUT_NAME,
     ReportValidationError,
-    generate_modeb_customer_case_report,
+    generate_workcenter_analysis_report,
     infer_workspace_root_from_report,
     resolve_mode_report_selection,
 )
-from app.runtime_paths import RuntimePaths, resolve_runtime_paths, with_workspace_dir
-from app.version import APP_VERSION
 
 try:
     from PySide6.QtCore import Qt, QUrl
@@ -45,8 +45,8 @@ except ModuleNotFoundError:
     PYSIDE6_AVAILABLE = False
 
 
-APP_TITLE = f"ModeA / ModeB Product Analysis Reporter {APP_VERSION}"
-SETTINGS_FILENAME = "modeb_product_analysis_launcher_settings.json"
+APP_TITLE = f"WorkCenter Analysis Reporter {APP_VERSION}"
+SETTINGS_FILENAME = "workcenter_analysis_launcher_settings.json"
 
 
 def _show_native_error(title: str, message: str) -> None:
@@ -92,14 +92,14 @@ def guess_workspace_root(base_paths: RuntimePaths, saved_workspace_root: str | P
     return None
 
 
-def _default_settings(_paths: RuntimePaths) -> dict[str, str]:
+def _default_settings() -> dict[str, str]:
     return {
         "workspace_root": "",
         "report_mode": "ModeB",
         "use_latest_report": "Yes",
         "manual_report_path": "",
         "output_file_name": DEFAULT_OUTPUT_NAME,
-        **{f"product_{index}": "" for index in range(1, 11)},
+        **{f"workcenter_{index}": "" for index in range(1, 11)},
     }
 
 
@@ -107,9 +107,9 @@ def _settings_path(paths: RuntimePaths) -> Path:
     return paths.app_install_dir / SETTINGS_FILENAME
 
 
-def load_customer_case_settings(paths: RuntimePaths) -> dict[str, str]:
+def load_settings(paths: RuntimePaths) -> dict[str, str]:
     settings_path = _settings_path(paths)
-    defaults = _default_settings(paths)
+    defaults = _default_settings()
     if not settings_path.exists():
         return defaults
     try:
@@ -121,7 +121,7 @@ def load_customer_case_settings(paths: RuntimePaths) -> dict[str, str]:
     return {key: str(payload.get(key, defaults[key])) for key in defaults}
 
 
-def save_customer_case_settings(paths: RuntimePaths, settings: dict[str, str]) -> Path:
+def save_settings(paths: RuntimePaths, settings: dict[str, str]) -> Path:
     settings_path = _settings_path(paths)
     payload = {key: str(value) for key, value in settings.items()}
     settings_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -132,15 +132,15 @@ def _to_bool(value: str | bool | None) -> bool:
     if isinstance(value, bool):
         return value
     text = str(value or "").strip().lower()
-    return text in {"1", "true", "yes", "y", "on", "是"}
+    return text in {"1", "true", "yes", "y", "on"}
 
 
 if PYSIDE6_AVAILABLE:
-    class CustomerCaseMainWindow(QMainWindow):
+    class WorkCenterAnalysisMainWindow(QMainWindow):
         def __init__(self) -> None:
             super().__init__()
             self.base_paths = resolve_runtime_paths()
-            self.settings = load_customer_case_settings(self.base_paths)
+            self.settings = load_settings(self.base_paths)
             self.setWindowTitle(APP_TITLE)
             self.resize(1080, 860)
             self.setStyleSheet(LIGHT_QSS)
@@ -162,9 +162,9 @@ if PYSIDE6_AVAILABLE:
 
             header = self._card()
             header_layout = QVBoxLayout(header)
-            title = QLabel("ModeA / ModeB 产品分析工具")
+            title = QLabel("ModeA / ModeB 工作中心分析工具")
             title.setObjectName("Title")
-            subtitle = QLabel("读取已有的 ModeA 或 ModeB 单报告，并复用 CapacityOptimizer 的共享工作目录生成产品分析 Excel。")
+            subtitle = QLabel("读取已有的 ModeA 或 ModeB 单报告，并复用 CapacityOptimizer 的共享工作目录生成工作中心分析 Excel。")
             subtitle.setObjectName("Subtitle")
             subtitle.setWordWrap(True)
             header_layout.addWidget(title)
@@ -183,10 +183,10 @@ if PYSIDE6_AVAILABLE:
             self.workspace_root_edit = QLineEdit()
             self.workspace_root_edit.setPlaceholderText("选择 CapacityOptimizer 的工作目录")
             self.workspace_root_edit.textChanged.connect(self._on_workspace_root_changed)
-            self.browse_workspace_button = QPushButton("浏览...")
-            self.browse_workspace_button.clicked.connect(self._browse_workspace_root)
+            browse_workspace_button = QPushButton("浏览...")
+            browse_workspace_button.clicked.connect(self._browse_workspace_root)
             workspace_layout.addWidget(self.workspace_root_edit, 1)
-            workspace_layout.addWidget(self.browse_workspace_button)
+            workspace_layout.addWidget(browse_workspace_button)
 
             self.report_mode_combo = QComboBox()
             self.report_mode_combo.addItems(["ModeA", "ModeB"])
@@ -204,15 +204,15 @@ if PYSIDE6_AVAILABLE:
             self.manual_report_path_edit = QLineEdit()
             self.manual_report_path_edit.setPlaceholderText("可输入完整路径，或只输入共享 output 目录下的文件名")
             self.manual_report_path_edit.editingFinished.connect(self._sync_workspace_from_manual_report)
-            self.browse_report_button = QPushButton("浏览...")
-            self.browse_report_button.clicked.connect(self._browse_report)
+            browse_report_button = QPushButton("浏览...")
+            browse_report_button.clicked.connect(self._browse_report)
             manual_path_layout.addWidget(self.manual_report_path_edit, 1)
-            manual_path_layout.addWidget(self.browse_report_button)
+            manual_path_layout.addWidget(browse_report_button)
 
             self.latest_report_hint = QLabel("请先选择 CapacityOptimizer 的工作目录。")
             self.latest_report_hint.setWordWrap(True)
             self.output_name_edit = QLineEdit()
-            self.output_name_edit.setPlaceholderText("例如 product_analysis.xlsx（会自动追加时间戳）")
+            self.output_name_edit.setPlaceholderText("例如 workcenter_analysis.xlsx（会自动追加时间戳）")
 
             source_layout.addRow("共享工作目录", workspace_row)
             source_layout.addRow("报告模式", self.report_mode_combo)
@@ -224,24 +224,24 @@ if PYSIDE6_AVAILABLE:
             source_layout.addRow("输出文件名", self.output_name_edit)
             self.scroll_layout.addWidget(source_card)
 
-            product_card = self._card()
-            product_layout = QGridLayout(product_card)
-            self.product_edits: list[QLineEdit] = []
+            wc_card = self._card()
+            wc_layout = QGridLayout(wc_card)
+            self.workcenter_edits: list[QLineEdit] = []
             for index in range(10):
-                label = QLabel(f"产品 {index + 1}")
+                label = QLabel(f"工作中心 {index + 1}")
                 edit = QLineEdit()
-                edit.setPlaceholderText("输入产品号，留空则忽略")
-                self.product_edits.append(edit)
+                edit.setPlaceholderText("输入工作中心名称，留空则忽略")
+                self.workcenter_edits.append(edit)
                 row = index // 2
                 col = (index % 2) * 2
-                product_layout.addWidget(label, row, col)
-                product_layout.addWidget(edit, row, col + 1)
-            self.scroll_layout.addWidget(product_card)
+                wc_layout.addWidget(label, row, col)
+                wc_layout.addWidget(edit, row, col + 1)
+            self.scroll_layout.addWidget(wc_card)
 
             action_card = self._card()
             action_layout = QVBoxLayout(action_card)
             button_row = QHBoxLayout()
-            self.generate_button = QPushButton("生成产品分析报告")
+            self.generate_button = QPushButton("生成工作中心分析报告")
             self.generate_button.setObjectName("Primary")
             self.generate_button.clicked.connect(self._generate_report)
             self.open_output_button = QPushButton("打开共享 output 目录")
@@ -281,8 +281,8 @@ if PYSIDE6_AVAILABLE:
             self.use_latest_checkbox.setChecked(_to_bool(self.settings.get("use_latest_report", "Yes")))
             self.manual_report_path_edit.setText(self.settings.get("manual_report_path", ""))
             self.output_name_edit.setText(self.settings.get("output_file_name", DEFAULT_OUTPUT_NAME))
-            for index, edit in enumerate(self.product_edits, start=1):
-                edit.setText(self.settings.get(f"product_{index}", ""))
+            for index, edit in enumerate(self.workcenter_edits, start=1):
+                edit.setText(self.settings.get(f"workcenter_{index}", ""))
             self._toggle_manual_report_state()
             self._refresh_workspace_state()
 
@@ -309,12 +309,12 @@ if PYSIDE6_AVAILABLE:
                 "manual_report_path": self.manual_report_path_edit.text().strip(),
                 "output_file_name": self.output_name_edit.text().strip() or DEFAULT_OUTPUT_NAME,
             }
-            for index, edit in enumerate(self.product_edits, start=1):
-                payload[f"product_{index}"] = edit.text().strip()
+            for index, edit in enumerate(self.workcenter_edits, start=1):
+                payload[f"workcenter_{index}"] = edit.text().strip()
             return payload
 
         def _save_settings(self) -> None:
-            settings_path = save_customer_case_settings(self.base_paths, self._collect_settings())
+            settings_path = save_settings(self.base_paths, self._collect_settings())
             self._append_status(f"设置已保存：{settings_path}")
 
         def _append_status(self, message: str) -> None:
@@ -327,7 +327,6 @@ if PYSIDE6_AVAILABLE:
                 self.data_input_display.clear()
                 self.latest_report_hint.setText("请先选择 CapacityOptimizer 的工作目录。")
                 return
-
             self.output_display.setText(str(workspace_paths.outputs_dir))
             self.data_input_display.setText(str(workspace_paths.workspace_input_dir))
             self._refresh_latest_report_hint()
@@ -337,12 +336,9 @@ if PYSIDE6_AVAILABLE:
             if workspace_paths is None:
                 self.latest_report_hint.setText("请先选择 CapacityOptimizer 的工作目录。")
                 return
-
-            workspace_root = workspace_paths.user_workspace_dir
-            if not is_capacity_optimizer_workspace(workspace_root):
+            if not is_capacity_optimizer_workspace(workspace_paths.user_workspace_dir):
                 self.latest_report_hint.setText("当前目录不像是 CapacityOptimizer 工作目录。请选择包含 Data_Input 和 output 的目录。")
                 return
-
             report_mode = self.report_mode_combo.currentText()
             try:
                 selection = resolve_mode_report_selection(
@@ -360,7 +356,6 @@ if PYSIDE6_AVAILABLE:
         def _toggle_manual_report_state(self) -> None:
             manual_enabled = not self.use_latest_checkbox.isChecked()
             self.manual_report_path_edit.setEnabled(manual_enabled)
-            self.browse_report_button.setEnabled(manual_enabled)
 
         def _on_workspace_root_changed(self) -> None:
             self._refresh_workspace_state()
@@ -408,23 +403,22 @@ if PYSIDE6_AVAILABLE:
                 return
             self._open_path(workspace_paths.outputs_dir)
 
-        def _collect_products(self) -> list[str]:
+        def _collect_workcenters(self) -> list[str]:
             seen: set[str] = set()
-            products: list[str] = []
-            for edit in self.product_edits:
+            workcenters: list[str] = []
+            for edit in self.workcenter_edits:
                 text = edit.text().strip()
                 if not text or text in seen:
                     continue
-                products.append(text)
+                workcenters.append(text)
                 seen.add(text)
-            return products
+            return workcenters
 
         def _generate_report(self) -> None:
-            products = self._collect_products()
-            if not products:
-                QMessageBox.warning(self, "缺少产品号", "请至少输入 1 个产品号。")
+            workcenters = self._collect_workcenters()
+            if not workcenters:
+                QMessageBox.warning(self, "缺少工作中心", "请至少输入 1 个工作中心。")
                 return
-            report_mode = self.report_mode_combo.currentText()
 
             workspace_paths = self._workspace_paths()
             if workspace_paths is None:
@@ -434,6 +428,7 @@ if PYSIDE6_AVAILABLE:
                 QMessageBox.warning(self, "工作目录无效", "当前目录不像是 CapacityOptimizer 工作目录。请选择包含 Data_Input 和 output 的目录。")
                 return
 
+            report_mode = self.report_mode_combo.currentText()
             try:
                 selection = resolve_mode_report_selection(
                     output_dir=workspace_paths.outputs_dir,
@@ -451,7 +446,7 @@ if PYSIDE6_AVAILABLE:
                     self,
                     f"不是最新 {report_mode} 报告",
                     (
-                        f"你当前选择的文件不是最新版本。\n\n"
+                        f"你当前选择的文件不是最新版。\n\n"
                         f"当前选择：{selection.selected_path.name}\n"
                         f"最新文件：{selection.latest_path.name}\n\n"
                         "是否仍继续分析你选择的旧版本？"
@@ -463,9 +458,9 @@ if PYSIDE6_AVAILABLE:
 
             QApplication.setOverrideCursor(Qt.WaitCursor)
             try:
-                output_path = generate_modeb_customer_case_report(
+                output_path = generate_workcenter_analysis_report(
                     report_path=selection.selected_path,
-                    products=products,
+                    workcenters=workcenters,
                     report_mode=report_mode,
                     output_dir=workspace_paths.outputs_dir,
                     output_name=self.output_name_edit.text().strip() or DEFAULT_OUTPUT_NAME,
@@ -480,8 +475,8 @@ if PYSIDE6_AVAILABLE:
                 QMessageBox.critical(self, "生成失败", f"出现未预期错误：\n{exc}")
                 self._append_status(f"未预期错误：{exc}")
             else:
-                self._append_status(f"产品分析报告已生成：{output_path}")
-                QMessageBox.information(self, "生成成功", f"产品分析报告已生成：\n{output_path}")
+                self._append_status(f"工作中心分析报告已生成：{output_path}")
+                QMessageBox.information(self, "生成成功", f"工作中心分析报告已生成：\n{output_path}")
             finally:
                 QApplication.restoreOverrideCursor()
                 self._refresh_latest_report_hint()
@@ -490,20 +485,20 @@ if PYSIDE6_AVAILABLE:
 def main() -> int:
     if not PYSIDE6_AVAILABLE:
         message = (
-            "PySide6 is required for the product analysis launcher UI.\n"
+            "PySide6 is required for the workcenter analysis launcher UI.\n"
             "Install it with: python -m pip install PySide6"
         )
-        _show_native_error("ModeA / ModeB Product Analysis Reporter", message)
+        _show_native_error("WorkCenter Analysis Reporter", message)
         raise SystemExit(message)
     app = QApplication.instance() or QApplication(sys.argv)
     try:
-        window = CustomerCaseMainWindow()
+        window = WorkCenterAnalysisMainWindow()
     except Exception as exc:
         message = f"启动工具时发生错误：\n{exc}"
         try:
-            QMessageBox.critical(None, "ModeA / ModeB Product Analysis Reporter", message)
+            QMessageBox.critical(None, "WorkCenter Analysis Reporter", message)
         except Exception:
-            _show_native_error("ModeA / ModeB Product Analysis Reporter", message)
+            _show_native_error("WorkCenter Analysis Reporter", message)
         return 1
     window.show()
     return app.exec()

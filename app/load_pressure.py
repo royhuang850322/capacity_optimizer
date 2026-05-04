@@ -12,6 +12,7 @@ from typing import Dict, List, Tuple
 import pandas as pd
 from ortools.linear_solver import pywraplp
 
+from app.capacity_basis import MAX_BASIS, PLANNED_BASIS
 from app.models import AllocationResult, CapacityRecord, LoadRecord, RoutingRecord
 
 
@@ -285,26 +286,26 @@ def build_capacity_compare_heatmap_frames(
     loads: List[LoadRecord],
     routings: List[RoutingRecord],
     months: List[str],
-    demand_basis: str = "Planner",
+    demand_basis: str = PLANNED_BASIS,
     unmet_capacities_by_basis: Dict[str, List[CapacityRecord]] | None = None,
 ) -> Dict[str, pd.DataFrame]:
     max_load = build_pressure_load_frame(
         mode=mode,
-        results=basis_results["Max"],
+        results=basis_results[MAX_BASIS],
         loads=loads,
-        capacities=basis_capacities["Max"],
+        capacities=basis_capacities[MAX_BASIS],
         routings=routings,
         months=months,
-        unmet_capacities=(unmet_capacities_by_basis or {}).get("Max"),
+        unmet_capacities=(unmet_capacities_by_basis or {}).get(MAX_BASIS),
     )
     planner_load = build_pressure_load_frame(
         mode=mode,
-        results=basis_results["Planner"],
+        results=basis_results[PLANNED_BASIS],
         loads=loads,
-        capacities=basis_capacities["Planner"],
+        capacities=basis_capacities[PLANNED_BASIS],
         routings=routings,
         months=months,
-        unmet_capacities=(unmet_capacities_by_basis or {}).get("Planner"),
+        unmet_capacities=(unmet_capacities_by_basis or {}).get(PLANNED_BASIS),
     )
     demand_tons = build_pressure_tons_frame(
         mode=mode,
@@ -399,7 +400,7 @@ def _merge_heatmap_metric_frames(
     metric_specs = [
         ("Demand", demand_tons),
         ("Max Load%", max_load),
-        ("Planner Load%", planner_load),
+        ("Planned Load%", planner_load),
     ]
 
     rows: list[dict[str, object]] = []
