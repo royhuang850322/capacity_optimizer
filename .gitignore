@@ -31,6 +31,8 @@ Thumbs.db
 *.temp
 *.bak
 *-win64*.zip
+pytest-cache-files-*/
+tmp*/
 
 # Excel / Office temporary files
 ~$*.xlsx
@@ -54,7 +56,14 @@ license_admin/private_keys/
 license_admin/license_tools/__pycache__/
 customer_case_launcher_settings.json
 modeb_product_analysis_launcher_settings.json
+product_analysis_launcher_settings.json
+workcenter_analysis_launcher_settings.json
+launcher_settings.json
+workspace_manifest.json
 
 # Local document files; remove this rule if you want to publish Word docs
 *.docx
 !Capacity_Optimizer_User_Manual_CN.docx
+
+# Local scratch archive
+archive/local_workspace/

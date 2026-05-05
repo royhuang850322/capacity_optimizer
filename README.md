@@ -1,15 +1,14 @@
-# Capacity Optimizer
+﻿# Capacity Optimizer
 
 ## Technical References
 
 - [Technical Reference (CN)](/C:/Users/super/capacity_optimizer/docs/TECHNICAL_REFERENCE_CN.md)
+- [User Manual (CN)](/C:/Users/super/capacity_optimizer/docs/CAPACITY_OPTIMIZER_USER_MANUAL_CN.md)
 - [Developer Guide](/C:/Users/super/capacity_optimizer/docs/developer_guide.md)
 - [User Guide](/C:/Users/super/capacity_optimizer/docs/user_guide.md)
-
-## Handoff
-
-- [Project Handoff (CN)](/C:/Users/super/capacity_optimizer/docs/PROJECT_HANDOFF_CN.md)
-- [Handoff Checklist (CN)](/C:/Users/super/capacity_optimizer/docs/HANDOFF_CHECKLIST_CN.md)
+- [Desktop Launcher Usage](/C:/Users/super/capacity_optimizer/docs/desktop_launcher_usage.md)
+- [Runtime Directory Strategy](/C:/Users/super/capacity_optimizer/docs/runtime_directory_strategy.md)
+- [PyInstaller One-Folder Build](/C:/Users/super/capacity_optimizer/docs/pyinstaller_onefolder_build.md)
 
 产能优化工具，当前版本采用：
 - `CSV / Excel` 作为输入数据
@@ -146,8 +145,12 @@ This launcher can:
 
 More detail:
 
-- [Desktop Launcher Usage](/C:/Users/super/capacity_optimizer/docs/desktop_launcher_usage.md)
-- [PyInstaller One-Folder Build](/C:/Users/super/capacity_optimizer/docs/pyinstaller_onefolder_build.md)
+- [ProductAnalysisLauncher.pyw](/C:/Users/super/capacity_optimizer/ProductAnalysisLauncher.pyw)
+- [WorkCenterAnalysisLauncher.pyw](/C:/Users/super/capacity_optimizer/WorkCenterAnalysisLauncher.pyw)
+
+Historical handoff, planning, and prior release documents have been moved under:
+
+- [docs/archive/README.md](/C:/Users/super/capacity_optimizer/docs/archive/README.md)
 
 ## License Workflow
 
@@ -234,7 +237,8 @@ Required columns:
 
 - `Product`
 - `WorkCenter`
-- `Annual_Capacity_Tons`
+- `Annual_Max_Capacity_Tons`
+- `Annual_Planned_Capacity_Tons`
 - `Utilization_Target`
 
 Optional columns:
@@ -426,7 +430,7 @@ Core guides for Milestone 10:
 Packaging and deployment references:
 
 - [PyInstaller One-Folder Build](/C:/Users/super/capacity_optimizer/docs/pyinstaller_onefolder_build.md)
-- [Installer Preparation](/C:/Users/super/capacity_optimizer/docs/installer_prep.md)
+- [Installer Preparation (Archived)](/C:/Users/super/capacity_optimizer/docs/archive/planning/installer_prep.md)
 - [Runtime Directory Strategy](/C:/Users/super/capacity_optimizer/docs/runtime_directory_strategy.md)
 - [Desktop Launcher Usage](/C:/Users/super/capacity_optimizer/docs/desktop_launcher_usage.md)
 - [IT Deployment Checklist (CN)](/C:/Users/super/capacity_optimizer/docs/IT_DEPLOYMENT_CHECKLIST_CN.md)
@@ -447,5 +451,5 @@ MIT. See [LICENSE](/C:/Users/super/capacity_optimizer/LICENSE).
 
 For the Windows desktop packaging plan and the runtime directory strategy, see:
 
-- [Packaging Implementation Plan](/C:/Users/super/capacity_optimizer/docs/implementation_plan_packaging.md)
+- [Packaging Implementation Plan (Archived)](/C:/Users/super/capacity_optimizer/docs/archive/planning/implementation_plan_packaging.md)
 - [Runtime Directory Strategy](/C:/Users/super/capacity_optimizer/docs/runtime_directory_strategy.md)

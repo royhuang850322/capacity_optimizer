@@ -7,6 +7,25 @@ The format is based on a simple release log:
 - `Changed` for behavior or workflow updates
 - `Fixed` for bug fixes
 
+## [v2.1.2] - 2026-05-05
+
+Repository cleanup and current-state documentation release.
+
+### Added
+- Promoted `TECHNICAL_REFERENCE_CN.md` as a tracked current technical reference
+- Added `docs/archive/README.md` and `archive/README.md` to document the archive structure
+- Added current release notes for `v2.1.2`
+
+### Changed
+- Archived historical handoff, planning, and prior release-note documents under `docs/archive/`
+- Archived the superseded standalone example generator script under `archive/legacy_code/`
+- Updated `README.md` to point only to current active documentation and launchers
+- Stopped tracking local runtime state files such as launcher settings and workspace manifest
+- Tool version string updated to `v2.1.2`
+
+### Fixed
+- Reduced the chance of uploading stale local notes, scratch files, or workspace state into the main branch
+
 ## [v2.1.1] - 2026-05-02
 
 Shared-workspace companion packaging release for the ModeB product analysis tool.

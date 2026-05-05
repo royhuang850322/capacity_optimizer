@@ -1,6 +1,6 @@
 # Chemical Capacity Optimizer 使用手册
 
-版本：v2.1.1  
+版本：v2.1.2  
 适用对象：客户端用户、内部实施人员、开发维护人员
 
 ---
@@ -746,8 +746,8 @@ git push
 #### 正式版本发布
 
 ```powershell
-git tag v2.1.1
-git push origin v2.1.1
+git tag v2.1.2
+git push origin v2.1.2
 ```
 
 #### 建议的提交前检查

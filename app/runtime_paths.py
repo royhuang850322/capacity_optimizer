@@ -151,6 +151,12 @@ def _resolve_user_workspace_dir(install_dir: Path, frozen: bool) -> Path:
     if not frozen:
         return install_dir
 
-    # Frozen/packaged mode: use install directory as workspace
-    # All user data (licenses, Data_Input, output, logs) will be created alongside the exe
-    return install_dir
+    local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_appdata:
+        return Path(local_appdata).expanduser().resolve() / APP_NAME
+
+    user_profile = os.environ.get("USERPROFILE", "").strip()
+    if user_profile:
+        return Path(user_profile).expanduser().resolve() / f".{APP_NAME}"
+
+    return install_dir / APP_NAME

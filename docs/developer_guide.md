@@ -72,7 +72,7 @@ Rules:
 Related docs:
 
 - `docs/runtime_directory_strategy.md`
-- `docs/installer_prep.md`
+- `docs/archive/planning/installer_prep.md`
 
 ## 6. Logging and Diagnostics
 
@@ -123,7 +123,7 @@ python packaging\verify_onefolder_dist.py --dist-root dist\CapacityOptimizer
 Main references:
 
 - `docs/pyinstaller_onefolder_build.md`
-- `docs/installer_prep.md`
+- `docs/archive/planning/installer_prep.md`
 
 ## 9. Installer Handoff Rules
 
