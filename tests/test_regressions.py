@@ -338,7 +338,7 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(len(aggregated), 2)
         self.assertEqual(sorted(record.forecast_tons for record in aggregated), [-5.0, 10.0])
 
-    def test_aggregate_and_demand_merge_multi_plant_metadata(self):
+    def test_aggregate_keeps_multi_plant_load_nodes_separate(self):
         aggregated = _aggregate_load_records(
             [
                 LoadRecord(
@@ -371,12 +371,18 @@ class RegressionTests(unittest.TestCase):
             ]
         )
 
-        demand, product_meta = _build_demand(aggregated)
+        demand, node_meta = _build_demand(aggregated)
 
-        self.assertEqual(len(aggregated), 2)
-        self.assertEqual(aggregated[0].plant, "C447 | N029")
-        self.assertEqual(demand[("2025-01", "1")], 5.0)
-        self.assertEqual(product_meta["1"], ("F1", "C447 | N029 | Z100"))
+        self.assertEqual(len(aggregated), 3)
+        self.assertEqual(
+            demand[("2025-01", "1", "N029", "")],
+            3.0,
+        )
+        self.assertEqual(
+            demand[("2025-01", "1", "C447", "")],
+            2.0,
+        )
+        self.assertEqual(node_meta[("2025-01", "1", "N029", "")], ("F1", "P1"))
 
     def test_format_issue_report_compacts_repeated_warnings(self):
         issues = [
@@ -800,6 +806,7 @@ class RegressionTests(unittest.TestCase):
                     product="P1",
                     product_family="F1",
                     plant="PLT1",
+                    source_resource="WC1",
                     allocation_type="Internal",
                     work_center="WC1",
                     route_type="Primary",
@@ -818,6 +825,7 @@ class RegressionTests(unittest.TestCase):
                     product="P1",
                     product_family="F1",
                     plant="PLT1",
+                    source_resource="WC1",
                     allocation_type="Outsourced",
                     work_center="[UNALLOCATED]",
                     route_type="Toller",
@@ -936,7 +944,7 @@ class RegressionTests(unittest.TestCase):
             self.assertNotIn("WC_Load_Pct", workbook.sheetnames)
             workbook.close()
 
-    def test_write_results_preserves_totals_after_planner_traceability_split(self):
+    def test_write_results_keeps_merged_planner_labels_without_split_back(self):
         with workspace_tempdir() as tmpdir:
             config = Config(
                 input_load_folder=tmpdir,
@@ -982,6 +990,7 @@ class RegressionTests(unittest.TestCase):
                     product="P1",
                     product_family="F1",
                     plant="PLT1",
+                    source_resource="WC1",
                     allocation_type="Internal",
                     work_center="WC1",
                     route_type="Primary",
@@ -997,6 +1006,7 @@ class RegressionTests(unittest.TestCase):
                     product="P1",
                     product_family="F1",
                     plant="PLT1",
+                    source_resource="WC1",
                     allocation_type="Unmet",
                     work_center="[UNALLOCATED]",
                     route_type="N/A",
@@ -1041,11 +1051,16 @@ class RegressionTests(unittest.TestCase):
             attribution_headers = [attribution_ws.cell(3, idx).value for idx in range(1, attribution_ws.max_column + 1)]
             attributed_idx = attribution_headers.index("Attributed_Unmet_Tons") + 1
             planner_idx = attribution_headers.index("PlannerName") + 1
-            attributed_by_planner = {
-                attribution_ws.cell(row, planner_idx).value: attribution_ws.cell(row, attributed_idx).value
+            source_idx = attribution_headers.index("Source_Resource") + 1
+            attribution_rows = [
+                (
+                    attribution_ws.cell(row, planner_idx).value,
+                    attribution_ws.cell(row, source_idx).value,
+                    attribution_ws.cell(row, attributed_idx).value,
+                )
                 for row in range(4, attribution_ws.max_row + 1)
                 if attribution_ws.cell(row, planner_idx).value
-            }
+            ]
 
             planner_ws = workbook["Planner_Result_Summary"]
             planner_rows = list(planner_ws.iter_rows(min_row=3, values_only=True))
@@ -1070,15 +1085,11 @@ class RegressionTests(unittest.TestCase):
             }
             workbook.close()
 
-        self.assertEqual(set(summary), {"PlannerA", "PlannerB"})
-        self.assertAlmostEqual(summary["PlannerA"]["demand"], 60.0, places=4)
-        self.assertAlmostEqual(summary["PlannerA"]["internal"], 36.0, places=4)
-        self.assertAlmostEqual(summary["PlannerA"]["unmet"], 24.0, places=4)
-        self.assertAlmostEqual(summary["PlannerB"]["demand"], 40.0, places=4)
-        self.assertAlmostEqual(summary["PlannerB"]["internal"], 24.0, places=4)
-        self.assertAlmostEqual(summary["PlannerB"]["unmet"], 16.0, places=4)
-        self.assertAlmostEqual(attributed_by_planner["PlannerA"], 24.0, places=4)
-        self.assertAlmostEqual(attributed_by_planner["PlannerB"], 16.0, places=4)
+        self.assertEqual(set(summary), {"PlannerA | PlannerB"})
+        self.assertAlmostEqual(summary["PlannerA | PlannerB"]["demand"], 100.0, places=4)
+        self.assertAlmostEqual(summary["PlannerA | PlannerB"]["internal"], 60.0, places=4)
+        self.assertAlmostEqual(summary["PlannerA | PlannerB"]["unmet"], 40.0, places=4)
+        self.assertEqual(attribution_rows, [("PlannerA | PlannerB", "WC1", 40.0)])
 
     def test_write_results_localizes_visible_report_strings_for_chinese(self):
         with workspace_tempdir() as tmpdir:
@@ -1118,6 +1129,7 @@ class RegressionTests(unittest.TestCase):
                     product="P1",
                     product_family="F1",
                     plant="PLT1",
+                    source_resource="WC1",
                     allocation_type="Internal",
                     work_center="WC1",
                     route_type="Primary",
@@ -1136,6 +1148,7 @@ class RegressionTests(unittest.TestCase):
                     product="P1",
                     product_family="F1",
                     plant="PLT1",
+                    source_resource="WC1",
                     allocation_type="Unmet",
                     work_center="[UNALLOCATED]",
                     route_type="N/A",
@@ -1171,8 +1184,7 @@ class RegressionTests(unittest.TestCase):
             self.assertIn("分配来源", detail_headers)
             self.assertEqual(detail_ws["B4"].value, "PlannerA")
             attribution_ws = workbook["未满足回挂明细"]
-            self.assertIn("模式A按计划员归属工作中心回挂", attribution_ws["A2"].value)
-            self.assertIn("基础产能", attribution_ws["A2"].value)
+            self.assertIn("来源资源工作中心", attribution_ws["A2"].value)
             workbook.close()
 
     def test_write_capacity_basis_results_creates_dual_basis_workbook_for_mode_b(self):
@@ -1209,6 +1221,7 @@ class RegressionTests(unittest.TestCase):
                         product="P1",
                         product_family="F1",
                         plant="PLT1",
+                        source_resource="WC1",
                         allocation_type="Internal",
                         work_center="WC1",
                         route_type="Capacity",
@@ -1227,6 +1240,7 @@ class RegressionTests(unittest.TestCase):
                         product="P1",
                         product_family="F1",
                         plant="PLT1",
+                        source_resource="WC1",
                         allocation_type="Unmet",
                         work_center="[UNALLOCATED]",
                         route_type="N/A",
@@ -1247,6 +1261,7 @@ class RegressionTests(unittest.TestCase):
                         product="P1",
                         product_family="F1",
                         plant="PLT1",
+                        source_resource="WC1",
                         allocation_type="Internal",
                         work_center="WC1",
                         route_type="Capacity",
@@ -1265,6 +1280,7 @@ class RegressionTests(unittest.TestCase):
                         product="P1",
                         product_family="F1",
                         plant="PLT1",
+                        source_resource="WC1",
                         allocation_type="Unmet",
                         work_center="[UNALLOCATED]",
                         route_type="N/A",
@@ -1466,6 +1482,7 @@ class RegressionTests(unittest.TestCase):
                     product="P1",
                     product_family="F1",
                     plant="PLT1",
+                    source_resource="WC1",
                     allocation_type="Internal",
                     work_center="WC1",
                     route_type="Primary",
@@ -1483,6 +1500,7 @@ class RegressionTests(unittest.TestCase):
                     product="P1",
                     product_family="F1",
                     plant="PLT1",
+                    source_resource="WC1",
                     allocation_type="Internal",
                     work_center="WC1",
                     route_type="Primary",
@@ -1498,6 +1516,7 @@ class RegressionTests(unittest.TestCase):
                     product="P1",
                     product_family="F1",
                     plant="PLT1",
+                    source_resource="WC1",
                     allocation_type="Outsourced",
                     work_center="[UNALLOCATED]",
                     route_type="Toller",
@@ -1642,7 +1661,7 @@ class RegressionTests(unittest.TestCase):
             self.assertIsNone(executive_ws["X1"].value)
             workbook.close()
 
-    def test_validate_rejects_planner_product_with_multiple_resources(self):
+    def test_validate_allows_planner_product_on_multiple_resources(self):
         loads = [
             LoadRecord(
                 month="2025-01",
@@ -1670,9 +1689,9 @@ class RegressionTests(unittest.TestCase):
 
         issues = validate(loads, capacities, [], mode="ModeA")
 
-        self.assertIn(("ERROR", "LoadPlannerProductMultiResource"), {(i.severity, i.check) for i in issues})
+        self.assertNotIn(("ERROR", "LoadPlannerProductMultiResource"), {(i.severity, i.check) for i in issues})
 
-    def test_mode_a_pressure_load_assigns_unmet_by_planner_resource(self):
+    def test_mode_a_pressure_load_assigns_unmet_by_source_resource(self):
         loads = [
             LoadRecord(
                 month="2025-01",
@@ -1703,14 +1722,15 @@ class RegressionTests(unittest.TestCase):
                 product="P1",
                 product_family="F1",
                 plant="PLT1",
+                source_resource="WC1",
                 allocation_type="Internal",
                 work_center="WC1",
                 route_type="Capacity",
                 priority=1,
-                demand_tons=100.0,
+                demand_tons=60.0,
                 allocated_tons=50.0,
                 outsourced_tons=0.0,
-                unmet_tons=50.0,
+                unmet_tons=10.0,
                 capacity_share_pct=100.0,
             ),
             AllocationResult(
@@ -1718,23 +1738,41 @@ class RegressionTests(unittest.TestCase):
                 product="P1",
                 product_family="F1",
                 plant="PLT1",
+                source_resource="WC1",
                 allocation_type="Unmet",
                 work_center="[UNALLOCATED]",
                 route_type="N/A",
                 priority=99,
-                demand_tons=100.0,
+                demand_tons=60.0,
                 allocated_tons=0.0,
                 outsourced_tons=0.0,
-                unmet_tons=50.0,
+                unmet_tons=10.0,
                 capacity_share_pct=0.0,
+            ),
+            AllocationResult(
+                month="2025-01",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                source_resource="WC2",
+                allocation_type="Unmet",
+                work_center="[UNALLOCATED]",
+                route_type="N/A",
+                priority=99,
+                demand_tons=40.0,
+                allocated_tons=0.0,
+                outsourced_tons=0.0,
+                unmet_tons=40.0,
+                capacity_share_pct=0.0,
+                planner_name="PlannerB",
             ),
         ]
 
         wc_load_df = build_pressure_load_frame("ModeA", results, loads, capacities, [], ["2025-01"])
         by_wc = {row["WorkCenter"]: row["2025-01"] for _, row in wc_load_df.iterrows()}
 
-        self.assertAlmostEqual(by_wc["WC1"], 0.8, places=6)
-        self.assertAlmostEqual(by_wc["WC2"], 0.2, places=6)
+        self.assertAlmostEqual(by_wc["WC1"], 0.6, places=6)
+        self.assertAlmostEqual(by_wc["WC2"], 0.4, places=6)
 
     def test_mode_b_pressure_load_uses_lp_for_no_routing_unmet(self):
         loads = [
@@ -1758,6 +1796,7 @@ class RegressionTests(unittest.TestCase):
                 product="P1",
                 product_family="F1",
                 plant="PLT1",
+                source_resource="WC1",
                 allocation_type="Internal",
                 work_center="WC1",
                 route_type="Capacity",
@@ -1773,6 +1812,7 @@ class RegressionTests(unittest.TestCase):
                 product="P1",
                 product_family="F1",
                 plant="PLT1",
+                source_resource="WC1",
                 allocation_type="Unmet",
                 work_center="[UNALLOCATED]",
                 route_type="N/A",
@@ -1788,8 +1828,8 @@ class RegressionTests(unittest.TestCase):
         wc_load_df = build_pressure_load_frame("ModeB", results, loads, capacities, [], ["2025-01"])
         by_wc = {row["WorkCenter"]: row["2025-01"] for _, row in wc_load_df.iterrows()}
 
-        self.assertAlmostEqual(by_wc["WC1"], 0.9, places=6)
-        self.assertAlmostEqual(by_wc["WC2"], 0.1, places=6)
+        self.assertAlmostEqual(by_wc["WC1"], 1.0, places=6)
+        self.assertNotIn("WC2", by_wc)
 
     def test_mode_b_final_unmet_returns_to_baseline_capacity_workcenter(self):
         loads = [
@@ -1826,6 +1866,7 @@ class RegressionTests(unittest.TestCase):
                 product="P1",
                 product_family="F1",
                 plant="PLT1",
+                source_resource="WC1",
                 allocation_type="Internal",
                 work_center="WC1",
                 route_type="Capacity",
@@ -1842,6 +1883,7 @@ class RegressionTests(unittest.TestCase):
                 product="P1",
                 product_family="F1",
                 plant="PLT1",
+                source_resource="WC1",
                 allocation_type="Internal",
                 work_center="WC2",
                 route_type="Primary",
@@ -1858,6 +1900,7 @@ class RegressionTests(unittest.TestCase):
                 product="P1",
                 product_family="F1",
                 plant="PLT1",
+                source_resource="WC1",
                 allocation_type="Unmet",
                 work_center="[UNALLOCATED]",
                 route_type="N/A",
@@ -1924,6 +1967,7 @@ class RegressionTests(unittest.TestCase):
                 product="P1",
                 product_family="F1",
                 plant="PLT1",
+                source_resource="WC1",
                 allocation_type="Internal",
                 work_center="WC1",
                 route_type="Primary",
@@ -1939,6 +1983,7 @@ class RegressionTests(unittest.TestCase):
                 product="P1",
                 product_family="F1",
                 plant="PLT1",
+                source_resource="WC1",
                 allocation_type="Outsourced",
                 work_center="[OUTSOURCED]",
                 route_type="Toller",
@@ -1954,6 +1999,7 @@ class RegressionTests(unittest.TestCase):
                 product="P1",
                 product_family="F1",
                 plant="PLT1",
+                source_resource="WC1",
                 allocation_type="Unmet",
                 work_center="[UNALLOCATED]",
                 route_type="N/A",

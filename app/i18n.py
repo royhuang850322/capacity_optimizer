@@ -204,6 +204,7 @@ COLUMN_TRANSLATIONS_ZH: dict[str, str] = {
     "Product": "产品",
     "ProductFamily": "产品族",
     "Plant": "工厂",
+    "Source_Resource": "来源资源",
     "AllocationType": "分配类型",
     "RouteType": "路径类型",
     "Priority": "优先级",

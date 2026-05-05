@@ -190,108 +190,77 @@ def _plannerize_results(
     results: List[AllocationResult],
     loads: Optional[List[LoadRecord]],
 ) -> List[AllocationResult]:
-    planner_demand = _build_planner_demand_map(loads)
-    if not planner_demand:
-        return [
-            AllocationResult(
-                month=result.month,
-                product=result.product,
-                product_family=result.product_family,
-                plant=result.plant,
-                allocation_type=result.allocation_type,
-                work_center=result.work_center,
-                route_type=result.route_type,
-                priority=result.priority,
-                demand_tons=result.demand_tons,
-                allocated_tons=result.allocated_tons,
-                outsourced_tons=result.outsourced_tons,
-                unmet_tons=result.unmet_tons,
-                capacity_share_pct=result.capacity_share_pct,
-                planner_name=result.planner_name,
-                allocation_source=result.allocation_source,
-                residual_after_capacity_tons=result.residual_after_capacity_tons,
-                residual_after_routing_tons=result.residual_after_routing_tons,
-            )
-            for result in results
-        ]
+    merged_planners_by_node: dict[tuple[str, str, str, str], str] = {}
+    resources_by_product_plant: dict[tuple[str, str, str], set[str]] = defaultdict(set)
 
-    plannerized: list[AllocationResult] = []
-    for result in results:
-        key = (result.month, result.product)
-        planner_weights = planner_demand.get(key)
-        if not planner_weights:
-            plannerized.append(
-                AllocationResult(
-                    month=result.month,
-                    product=result.product,
-                    product_family=result.product_family,
-                    plant=result.plant,
-                    allocation_type=result.allocation_type,
-                    work_center=result.work_center,
-                    route_type=result.route_type,
-                    priority=result.priority,
-                    demand_tons=result.demand_tons,
-                    allocated_tons=result.allocated_tons,
-                    outsourced_tons=result.outsourced_tons,
-                    unmet_tons=result.unmet_tons,
-                    capacity_share_pct=result.capacity_share_pct,
-                    planner_name=result.planner_name,
-                    allocation_source=result.allocation_source,
-                    residual_after_capacity_tons=result.residual_after_capacity_tons,
-                    residual_after_routing_tons=result.residual_after_routing_tons,
-                )
-            )
-            continue
+    def _merge_label(existing: str, incoming: str) -> str:
+        values = {
+            part.casefold(): part
+            for part in [*(p.strip() for p in str(existing or "").split("|")), *(p.strip() for p in str(incoming or "").split("|"))]
+            if part
+        }
+        return " | ".join(values[key] for key in sorted(values))
 
-        demand_split = _split_value_by_planner(result.demand_tons, planner_weights)
-        allocated_split = _split_value_by_planner(result.allocated_tons, planner_weights)
-        outsourced_split = _split_value_by_planner(result.outsourced_tons, planner_weights)
-        unmet_split = _split_value_by_planner(result.unmet_tons, planner_weights)
-        cap_share_split = _split_value_by_planner(result.capacity_share_pct, planner_weights)
-        residual_after_capacity_split = _split_value_by_planner(
-            result.residual_after_capacity_tons,
-            planner_weights,
+    def _resolve_source_resource(result: AllocationResult) -> str:
+        explicit = str(result.source_resource or "").strip()
+        if explicit:
+            return explicit
+        resources = resources_by_product_plant.get(
+            (str(result.month), str(result.product), str(result.plant)),
+            set(),
         )
-        residual_after_routing_split = _split_value_by_planner(
-            result.residual_after_routing_tons,
-            planner_weights,
-        )
+        if len(resources) == 1:
+            return next(iter(resources))
+        return ""
 
-        for planner_name, _weight in planner_weights:
-            planner_allocated = round(allocated_split.get(planner_name, 0.0), 4)
-            planner_outsourced = round(outsourced_split.get(planner_name, 0.0), 4)
-            planner_unmet = round(unmet_split.get(planner_name, 0.0), 4)
-
-            if result.allocation_type == "Internal" and planner_allocated <= 0.0:
-                continue
-            if result.allocation_type == "Outsourced" and planner_outsourced <= 0.0:
-                continue
-            if result.allocation_type == "Unmet" and planner_unmet <= 0.0:
-                continue
-
-            plannerized.append(
-                AllocationResult(
-                    month=result.month,
-                    product=result.product,
-                    product_family=result.product_family,
-                    plant=result.plant,
-                    allocation_type=result.allocation_type,
-                    work_center=result.work_center,
-                    route_type=result.route_type,
-                    priority=result.priority,
-                    demand_tons=round(demand_split.get(planner_name, 0.0), 4),
-                    allocated_tons=planner_allocated,
-                    outsourced_tons=planner_outsourced,
-                    unmet_tons=planner_unmet,
-                    capacity_share_pct=round(cap_share_split.get(planner_name, 0.0), 4),
-                    planner_name=planner_name,
-                    allocation_source=result.allocation_source,
-                    residual_after_capacity_tons=round(residual_after_capacity_split.get(planner_name, 0.0), 4),
-                    residual_after_routing_tons=round(residual_after_routing_split.get(planner_name, 0.0), 4),
-                )
+    if loads:
+        for load in loads:
+            source_resource = str(load.resource_group_owner or "").strip()
+            node_key = (str(load.month), str(load.product), str(load.plant), source_resource)
+            merged_planners_by_node[node_key] = _merge_label(
+                merged_planners_by_node.get(node_key, ""),
+                str(load.planner_name or "").strip(),
             )
+            if source_resource:
+                resources_by_product_plant.setdefault(
+                    (str(load.month), str(load.product), str(load.plant)),
+                    set(),
+                ).add(source_resource)
 
-    return plannerized
+    return [
+        AllocationResult(
+            month=result.month,
+            product=result.product,
+            product_family=result.product_family,
+            plant=result.plant,
+            source_resource=_resolve_source_resource(result),
+            allocation_type=result.allocation_type,
+            work_center=result.work_center,
+            route_type=result.route_type,
+            priority=result.priority,
+            demand_tons=result.demand_tons,
+            allocated_tons=result.allocated_tons,
+            outsourced_tons=result.outsourced_tons,
+            unmet_tons=result.unmet_tons,
+            capacity_share_pct=result.capacity_share_pct,
+            planner_name=(
+                str(result.planner_name or "").strip()
+                or merged_planners_by_node.get(
+                    (
+                        str(result.month),
+                        str(result.product),
+                        str(result.plant),
+                        _resolve_source_resource(result),
+                    ),
+                    "",
+                )
+            ),
+            allocation_source=result.allocation_source,
+            residual_after_capacity_tons=result.residual_after_capacity_tons,
+            residual_after_routing_tons=result.residual_after_routing_tons,
+        )
+        for result in results
+    ]
 
 
 def write_results(
@@ -558,6 +527,7 @@ def _results_to_df(
         "Product",
         "ProductFamily",
         "Plant",
+        "Source_Resource",
         "AllocationType",
         "WorkCenter",
         "RouteType",
@@ -579,6 +549,7 @@ def _results_to_df(
                 "Product": result.product,
                 "ProductFamily": result.product_family,
                 "Plant": result.plant,
+                "Source_Resource": result.source_resource,
                 "AllocationType": result.allocation_type,
                 "WorkCenter": result.work_center,
                 "RouteType": result.route_type,
@@ -1755,7 +1726,7 @@ def _write_product_risk_comparison(wb: Workbook, artifacts: dict[str, dict[str, 
     product_b = artifacts["ModeB"]["analysis"]["product_summary"].copy()
     product_compare = product_a.merge(
         product_b,
-        on=["Product", "ProductFamily", "Plant"],
+        on=["Product", "ProductFamily", "Plant", "Source_Resource"],
         how="outer",
         suffixes=("_ModeA", "_ModeB"),
     ).fillna(0.0)
@@ -1768,6 +1739,7 @@ def _write_product_risk_comparison(wb: Workbook, artifacts: dict[str, dict[str, 
         "Product",
         "ProductFamily",
         "Plant",
+        "Source_Resource",
         "Unmet_Tons_ModeA",
         "Unmet_Tons_ModeB",
         "Service_Level_ModeA",
@@ -2043,7 +2015,7 @@ def _write_planner_comparison(wb: Workbook, artifacts: dict[str, dict[str, Any]]
     _write_note(
         ws,
         f"A{max(layout['end_row'] + 2, 40)}",
-        "Planner comparison is based on planner-level traceability after the product-month optimization result is proportionally split back to planner demand shares.",
+        "Planner comparison is based on merged planner labels attached to each month-product-plant-resource demand node.",
     )
     _autofit(ws)
 
@@ -2330,6 +2302,16 @@ def _write_capacity_basis_monthly_analysis(
     mode: str,
     artifacts: dict[str, dict[str, Any]],
 ) -> None:
+    monthly_columns = [
+        "Month",
+        "Demand_Tons",
+        "Internal_Tons",
+        "Outsourced_Tons",
+        "Unmet_Tons",
+        "Supplied_Tons",
+        "Service_Level",
+    ]
+
     ws = wb.create_sheet(_sheet_title("Monthly_Trend"))
     _write_sheet_title(ws, _rt("sheet_title_monthly_capacity", mode=localize_mode(_lang(), mode)))
     _prepare_monthly_trend_sheet(
@@ -2343,6 +2325,10 @@ def _write_capacity_basis_monthly_analysis(
 
     monthly_max = artifacts["Max"]["analysis"]["monthly_summary"].copy()
     monthly_planner = artifacts["Planned"]["analysis"]["monthly_summary"].copy()
+    if "Month" not in monthly_max.columns:
+        monthly_max = pd.DataFrame(columns=monthly_columns)
+    if "Month" not in monthly_planner.columns:
+        monthly_planner = pd.DataFrame(columns=monthly_columns)
     monthly_compare = monthly_max.merge(
         monthly_planner,
         on="Month",
@@ -2650,7 +2636,7 @@ def _write_capacity_basis_product_risk(
     product_planner = artifacts["Planned"]["analysis"]["product_summary"].copy()
     product_compare = product_max.merge(
         product_planner,
-        on=["Product", "ProductFamily", "Plant"],
+        on=["Product", "ProductFamily", "Plant", "Source_Resource"],
         how="outer",
         suffixes=("_Max", "_Planned"),
     ).fillna(0.0)
@@ -2666,6 +2652,7 @@ def _write_capacity_basis_product_risk(
         "Product",
         "ProductFamily",
         "Plant",
+        "Source_Resource",
         "Unmet_Tons_Max",
         "Unmet_Tons_Planned",
         "Service_Level_Max",
@@ -3410,8 +3397,8 @@ def _write_planner_summary(wb: Workbook, analysis: dict[str, Any]) -> None:
         ws,
         f"A{layout['end_row'] + 2}",
         _text(
-            "This sheet shows planner-level traceability after the product-month optimization result is split back to planner shares.",
-            "该表展示将产品-月份层级的优化结果按 planner 份额拆回后的计划员级追溯结果。",
+            "This sheet shows merged planner labels at the month-product-plant-resource demand-node level.",
+            "该表展示按 月份-产品-工厂-来源资源 需求节点汇总后的合并计划员标签追溯结果。",
         ),
     )
     _autofit(ws)
@@ -3472,14 +3459,14 @@ def _write_detail(wb: Workbook, df: pd.DataFrame) -> None:
     detail_df = _reorder_detail_columns(df)
     has_capacity_basis = "Capacity_Basis" in detail_df.columns
     freeze_col_index = len(
-        [column for column in detail_df.columns if column in {"Capacity_Basis", "Month", "PlannerName", "Product", "ProductFamily", "Plant", "AllocationType", "WorkCenter"}]
+        [column for column in detail_df.columns if column in {"Capacity_Basis", "Month", "PlannerName", "Product", "ProductFamily", "Plant", "Source_Resource", "AllocationType", "WorkCenter"}]
     ) + 1
     freeze_panes = f"{get_column_letter(freeze_col_index)}4"
     _prepare_allocation_detail_sheet(
         ws,
         subtitle=_text(
-            "Planner traceability detail by month, product, allocation type, and workcenter.",
-            "按月份、产品、分配类型和工作中心展示的 planner 可追溯明细。",
+            "Merged planner detail by month, product, plant, source resource, allocation type, and workcenter.",
+            "按月份、产品、工厂、来源资源、分配类型和工作中心展示的合并计划员追溯明细。",
         ),
         freeze_panes=freeze_panes,
         has_capacity_basis=has_capacity_basis,
@@ -3528,8 +3515,8 @@ def _write_unmet_attribution_detail(wb: Workbook, df: pd.DataFrame) -> None:
     _prepare_unmet_attribution_sheet(
         ws,
         subtitle=_text(
-            "Trace final unmet demand back to the workcenter used on the pressure reports. ModeA uses planner owner workcenters; ModeB uses baseline capacity workcenters.",
-            "用本表追踪最终未满足需求在压力报表中被回挂到哪个工作中心。模式A按计划员归属工作中心回挂，模式B回到基础产能工作中心。",
+            "Trace final unmet demand back to the source-resource workcenter used on the pressure reports.",
+            "用本表追踪最终未满足需求在压力报表中被回挂到哪个来源资源工作中心。",
         ),
         header_end_col=header_end_col,
     )
@@ -3575,6 +3562,7 @@ def _reorder_unmet_attribution_columns(df: pd.DataFrame) -> pd.DataFrame:
         "Product",
         "ProductFamily",
         "Plant",
+        "Source_Resource",
         "Owner_WorkCenter",
         "Capacity_Candidate_WorkCenters",
         "Attributed_WorkCenter",
@@ -3594,7 +3582,7 @@ def _write_allocation_summary(wb: Workbook, df: pd.DataFrame, months: List[str])
     if internal_df.empty:
         ws["A1"] = "No data"
         return
-    index_cols = ["Product", "ProductFamily", "Plant"]
+    index_cols = ["Product", "ProductFamily", "Plant", "Source_Resource"]
     if "Capacity_Basis" in internal_df.columns:
         index_cols = ["Capacity_Basis", *index_cols]
     if "PlannerName" in internal_df.columns:
@@ -3618,7 +3606,7 @@ def _write_outsource_summary(wb: Workbook, df: pd.DataFrame, months: List[str]) 
         return
     ws = wb.create_sheet(_sheet_title("Outsource_Summary"))
 
-    index_cols = ["Product", "ProductFamily", "Plant"]
+    index_cols = ["Product", "ProductFamily", "Plant", "Source_Resource"]
     if "Capacity_Basis" in outsource_df.columns:
         index_cols = ["Capacity_Basis", *index_cols]
     if "PlannerName" in outsource_df.columns:
@@ -3648,7 +3636,7 @@ def _write_unmet_summary(wb: Workbook, df: pd.DataFrame, months: List[str]) -> N
         ws["A1"] = "No data"
         return
 
-    index_cols = ["Product", "ProductFamily", "Plant"]
+    index_cols = ["Product", "ProductFamily", "Plant", "Source_Resource"]
     if "Capacity_Basis" in df.columns:
         index_cols = ["Capacity_Basis", *index_cols]
     if "PlannerName" in df.columns:
@@ -3691,6 +3679,7 @@ def _write_binary_report(
             "Product",
             "ProductFamily",
             "Plant",
+            "Source_Resource",
         ],
         columns="Month",
         values="Unmet_Tons",
@@ -3712,9 +3701,9 @@ def _write_binary_report(
         num_formats={
             column: "0"
             for column in binary_pivot.columns
-            if column not in {"Capacity_Basis", "Product", "ProductFamily", "Plant"}
+            if column not in {"Capacity_Basis", "Product", "ProductFamily", "Plant", "Source_Resource"}
         },
-        freeze=f"{get_column_letter(len([col for col in binary_pivot.columns if col in {'Capacity_Basis', 'Product', 'ProductFamily', 'Plant'}]) + 1)}2",
+        freeze=f"{get_column_letter(len([col for col in binary_pivot.columns if col in {'Capacity_Basis', 'Product', 'ProductFamily', 'Plant', 'Source_Resource'}]) + 1)}2",
     )
 
     green_fill = PatternFill("solid", fgColor="C6EFCE")
@@ -4290,18 +4279,19 @@ def _set_allocation_detail_column_layout(ws, has_capacity_basis: bool) -> None:
         "D": 22,
         "E": 18,
         "F": 14,
-        "G": 14,
-        "H": 22,
+        "G": 18,
+        "H": 14,
         "I": 14,
         "J": 14,
         "K": 14,
         "L": 14,
         "M": 14,
         "N": 14,
-        "O": 10,
-        "P": 18,
+        "O": 14,
+        "P": 10,
         "Q": 18,
         "R": 18,
+        "S": 18,
     }
     if not has_capacity_basis:
         widths = {
@@ -4310,18 +4300,19 @@ def _set_allocation_detail_column_layout(ws, has_capacity_basis: bool) -> None:
             "C": 22,
             "D": 18,
             "E": 14,
-            "F": 14,
-            "G": 22,
+            "F": 18,
+            "G": 14,
             "H": 14,
             "I": 14,
             "J": 14,
             "K": 14,
             "L": 14,
             "M": 14,
-            "N": 10,
-            "O": 18,
+            "N": 14,
+            "O": 10,
             "P": 18,
             "Q": 18,
+            "R": 18,
         }
     for column, width in widths.items():
         ws.column_dimensions[column].width = width
@@ -4330,7 +4321,7 @@ def _set_allocation_detail_column_layout(ws, has_capacity_basis: bool) -> None:
 def _prepare_allocation_detail_sheet(ws, subtitle: str, freeze_panes: str, has_capacity_basis: bool) -> None:
     ws.sheet_view.showGridLines = False
     _set_allocation_detail_column_layout(ws, has_capacity_basis=has_capacity_basis)
-    end_col = "R" if has_capacity_basis else "Q"
+    end_col = "S" if has_capacity_basis else "R"
     ws.merge_cells(f"A1:{end_col}1")
     ws["A1"] = _sheet_title("Allocation_Detail")
     ws["A1"].fill = HDR_FILL
@@ -4372,6 +4363,7 @@ def _set_unmet_attribution_column_layout(ws, columns: list[str]) -> None:
         "Product": 16,
         "ProductFamily": 18,
         "Plant": 12,
+        "Source_Resource": 18,
         "Owner_WorkCenter": 22,
         "Capacity_Candidate_WorkCenters": 30,
         "Attributed_WorkCenter": 22,
@@ -4392,6 +4384,7 @@ def _reorder_detail_columns(df: pd.DataFrame) -> pd.DataFrame:
         "Product",
         "ProductFamily",
         "Plant",
+        "Source_Resource",
         "AllocationType",
         "WorkCenter",
         "Demand_Tons",

@@ -531,7 +531,8 @@ def _aggregate_load_records(records: List[LoadRecord]) -> List[LoadRecord]:
         key = (
             r.month,
             r.product,
-            r.planner_name,
+            r.plant,
+            _norm_optional_text(r.resource_group_owner),
             _scenario_key(r.scenario),
             r.forecast_tons < 0,
         )
@@ -542,7 +543,7 @@ def _aggregate_load_records(records: List[LoadRecord]) -> List[LoadRecord]:
             existing = grouped[key]
             grouped[key] = LoadRecord(
                 month=existing.month,
-                planner_name=existing.planner_name,
+                planner_name=_merge_text_values(existing.planner_name, r.planner_name),
                 product=existing.product,
                 product_family=_merge_text_values(existing.product_family, r.product_family),
                 plant=_merge_text_values(existing.plant, r.plant),

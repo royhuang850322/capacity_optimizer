@@ -69,7 +69,6 @@ def _split_merged_text(value: str | None) -> list[str]:
 
 def _check_load_records(loads: List[LoadRecord]) -> List[ValidationIssue]:
     issues: List[ValidationIssue] = []
-    planner_product_resources: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
 
     for record in loads:
         ref = _row_ref(record)
@@ -122,18 +121,6 @@ def _check_load_records(loads: List[LoadRecord]) -> List[ValidationIssue]:
                 detail=(
                     f"{ref}Missing Resource for product={record.product}, "
                     f"month={record.month}, planner={record.planner_name}."
-                ),
-            ))
-        planner_product_resources[(record.planner_name, record.product)].update(resources)
-
-    for (planner_name, product), resources in sorted(planner_product_resources.items()):
-        if len(resources) > 1:
-            issues.append(ValidationIssue(
-                severity="ERROR",
-                check="LoadPlannerProductMultiResource",
-                detail=(
-                    f"Planner '{planner_name}' maps product '{product}' to multiple Resources: "
-                    f"{sorted(resources)}."
                 ),
             ))
 

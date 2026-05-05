@@ -101,6 +101,7 @@ class AllocationResult:
     outsourced_tons: float
     unmet_tons: float
     capacity_share_pct: float   # fraction of that WC's monthly capacity consumed
+    source_resource: str = ""
     planner_name: str = ""
     allocation_source: str = ""
     residual_after_capacity_tons: float = 0.0

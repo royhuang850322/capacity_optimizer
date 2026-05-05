@@ -239,6 +239,7 @@ def build_unmet_attribution_detail_frame(
         "Product",
         "ProductFamily",
         "Plant",
+        "Source_Resource",
         "Owner_WorkCenter",
         "Capacity_Candidate_WorkCenters",
         "Attributed_WorkCenter",
@@ -272,7 +273,7 @@ def build_unmet_attribution_detail_frame(
     for numeric_col in ("Reference_Demand_Tons", "Product_Unmet_Tons", "Attributed_Unmet_Tons"):
         detail_df[numeric_col] = pd.to_numeric(detail_df[numeric_col], errors="coerce").fillna(0.0).round(4)
     detail_df = detail_df.sort_values(
-        ["Month", "Product", "PlannerName", "Attributed_WorkCenter"],
+        ["Month", "Product", "Plant", "Source_Resource", "PlannerName", "Attributed_WorkCenter"],
         key=lambda col: col.map(lambda value: str(value).casefold()),
         kind="stable",
     ).reset_index(drop=True)
@@ -363,12 +364,21 @@ def _build_internal_tons_map(
     return month_product_wc_tons
 
 
+def _result_node_key(result: AllocationResult) -> Tuple[str, str, str, str]:
+    return (
+        str(result.month),
+        str(result.product),
+        str(result.plant),
+        str(result.source_resource),
+    )
+
+
 def _extract_unmet_by_month_product(
     results: List[AllocationResult],
-) -> Dict[Tuple[str, str], float]:
-    unmet_by_month_product: Dict[Tuple[str, str], float] = {}
+) -> Dict[Tuple[str, str, str, str], float]:
+    unmet_by_month_product: Dict[Tuple[str, str, str, str], float] = {}
     for result in results:
-        key = (result.month, result.product)
+        key = _result_node_key(result)
         unmet_by_month_product[key] = max(
             unmet_by_month_product.get(key, 0.0),
             float(result.unmet_tons or 0.0),
@@ -448,10 +458,10 @@ def _summarize_heatmap_months_to_years(
 
 def _extract_outsourced_by_month_product(
     results: List[AllocationResult],
-) -> Dict[Tuple[str, str], float]:
-    outsourced_by_month_product: Dict[Tuple[str, str], float] = {}
+) -> Dict[Tuple[str, str, str, str], float]:
+    outsourced_by_month_product: Dict[Tuple[str, str, str, str], float] = {}
     for result in results:
-        key = (result.month, result.product)
+        key = _result_node_key(result)
         outsourced_by_month_product[key] = max(
             outsourced_by_month_product.get(key, 0.0),
             float(result.outsourced_tons or 0.0),
@@ -478,16 +488,23 @@ def _join_workcenters(work_centers: List[str] | set[str]) -> str:
 def _build_month_product_metadata(
     loads: List[LoadRecord],
     results: List[AllocationResult],
-) -> Dict[Tuple[str, str], dict[str, object]]:
-    metadata: Dict[Tuple[str, str], dict[str, object]] = {}
+) -> Dict[Tuple[str, str, str, str], dict[str, object]]:
+    metadata: Dict[Tuple[str, str, str, str], dict[str, object]] = {}
 
     for load in loads:
-        key = (load.month, load.product)
+        key = (
+            str(load.month),
+            str(load.product),
+            str(load.plant),
+            str(load.resource_group_owner or "").strip(),
+        )
         payload = metadata.setdefault(
             key,
             {
                 "product_family": "",
                 "plant": "",
+                "planner_name": "",
+                "source_resource": str(load.resource_group_owner or "").strip(),
                 "reference_demand_tons": 0.0,
             },
         )
@@ -495,15 +512,23 @@ def _build_month_product_metadata(
             payload["product_family"] = load.product_family
         if not payload["plant"] and load.plant:
             payload["plant"] = load.plant
+        if not payload["planner_name"] and load.planner_name:
+            payload["planner_name"] = load.planner_name
+        elif load.planner_name:
+            payload["planner_name"] = _join_workcenters(
+                set(_split_merged_text(str(payload["planner_name"]))) | {load.planner_name}
+            )
         payload["reference_demand_tons"] = float(payload["reference_demand_tons"]) + max(float(load.forecast_tons or 0.0), 0.0)
 
     for result in results:
-        key = (result.month, result.product)
+        key = _result_node_key(result)
         payload = metadata.setdefault(
             key,
             {
                 "product_family": "",
                 "plant": "",
+                "planner_name": "",
+                "source_resource": result.source_resource,
                 "reference_demand_tons": 0.0,
             },
         )
@@ -511,6 +536,8 @@ def _build_month_product_metadata(
             payload["product_family"] = result.product_family
         if not payload["plant"] and result.plant:
             payload["plant"] = result.plant
+        if not payload["planner_name"] and result.planner_name:
+            payload["planner_name"] = result.planner_name
         if float(payload["reference_demand_tons"]) <= EPSILON:
             payload["reference_demand_tons"] = max(float(payload["reference_demand_tons"]), float(result.demand_tons or 0.0))
 
@@ -519,82 +546,58 @@ def _build_month_product_metadata(
 
 def _build_mode_a_unmet_assignment_rows(
     loads: List[LoadRecord],
-    unmet_by_month_product: Dict[Tuple[str, str], float],
+    unmet_by_month_product: Dict[Tuple[str, str, str, str], float],
 ) -> List[dict[str, object]]:
-    planner_month_product: Dict[Tuple[str, str, str], dict[str, object]] = {}
+    planner_month_product: Dict[Tuple[str, str, str, str], dict[str, object]] = {}
     for load in loads:
         tons = max(float(load.forecast_tons or 0.0), 0.0)
         if tons <= EPSILON:
             continue
-        key = (load.month, load.product, load.planner_name)
+        source_resource = str(load.resource_group_owner or "").strip()
+        key = (load.month, load.product, load.plant, source_resource)
         bucket = planner_month_product.setdefault(
             key,
             {
                 "tons": 0.0,
-                "resources": set(),
+                "planner_names": set(),
                 "product_family": load.product_family or "",
                 "plant": load.plant or "",
+                "source_resource": source_resource,
             },
         )
         bucket["tons"] = float(bucket["tons"]) + tons
-        bucket["resources"].update(_split_merged_text(load.resource_group_owner))
+        if load.planner_name:
+            bucket["planner_names"].add(load.planner_name)
         if not bucket["product_family"] and load.product_family:
             bucket["product_family"] = load.product_family
         if not bucket["plant"] and load.plant:
             bucket["plant"] = load.plant
 
-    grouped: Dict[Tuple[str, str], List[dict[str, object]]] = defaultdict(list)
-    for (month, product, planner_name), payload in planner_month_product.items():
-        resources = sorted(payload["resources"])
-        if len(resources) != 1:
+    rows: List[dict[str, object]] = []
+    for (month, product, plant, source_resource), unmet_tons in unmet_by_month_product.items():
+        payload = planner_month_product.get((month, product, plant, source_resource))
+        if not payload:
             raise ValueError(
-                f"ModeA unmet assignment requires exactly one resource for planner={planner_name}, "
-                f"product={product}, month={month}. Found: {resources or ['<blank>']}."
+                f"ModeA unmet assignment could not find load node for product={product}, month={month}, "
+                f"plant={plant}, resource={source_resource}."
             )
-        grouped[(month, product)].append(
+        rows.append(
             {
-                "planner_name": planner_name,
-                "owner_work_center": resources[0],
-                "reference_demand_tons": float(payload["tons"]),
-                "product_family": payload["product_family"],
-                "plant": payload["plant"],
+                "Month": month,
+                "PlannerName": _join_workcenters(payload["planner_names"]),
+                "Product": product,
+                "ProductFamily": payload["product_family"],
+                "Plant": payload["plant"],
+                "Source_Resource": source_resource,
+                "Owner_WorkCenter": source_resource,
+                "Capacity_Candidate_WorkCenters": source_resource,
+                "Attributed_WorkCenter": source_resource,
+                "Reference_Demand_Tons": float(payload["tons"]),
+                "Product_Unmet_Tons": unmet_tons,
+                "Attributed_Unmet_Tons": unmet_tons,
+                "Attribution_Rule": "ModeA source resource workcenter",
             }
         )
-
-    rows: List[dict[str, object]] = []
-    for (month, product), unmet_tons in unmet_by_month_product.items():
-        planner_rows = grouped.get((month, product), [])
-        if not planner_rows:
-            raise ValueError(
-                f"ModeA unmet assignment could not find planner resource mapping for product={product}, month={month}."
-            )
-
-        total_tons = sum(float(row["reference_demand_tons"]) for row in planner_rows)
-        if total_tons <= EPSILON:
-            raise ValueError(
-                f"ModeA unmet assignment has zero planner demand while unmet exists for product={product}, month={month}."
-            )
-
-        candidate_workcenters = _join_workcenters([str(row["owner_work_center"]) for row in planner_rows])
-        for row in sorted(planner_rows, key=lambda item: str(item["planner_name"]).casefold()):
-            reference_demand_tons = float(row["reference_demand_tons"])
-            attributed_tons = unmet_tons * reference_demand_tons / total_tons
-            rows.append(
-                {
-                    "Month": month,
-                    "PlannerName": row["planner_name"],
-                    "Product": product,
-                    "ProductFamily": row["product_family"],
-                    "Plant": row["plant"],
-                    "Owner_WorkCenter": row["owner_work_center"],
-                    "Capacity_Candidate_WorkCenters": candidate_workcenters,
-                    "Attributed_WorkCenter": row["owner_work_center"],
-                    "Reference_Demand_Tons": reference_demand_tons,
-                    "Product_Unmet_Tons": unmet_tons,
-                    "Attributed_Unmet_Tons": attributed_tons,
-                    "Attribution_Rule": "ModeA planner owner workcenter",
-                }
-            )
     return rows
 
 
@@ -613,7 +616,7 @@ def _assign_mode_a_unmet_tons(
 
 def _assign_mode_b_unmet_tons(
     results: List[AllocationResult],
-    unmet_by_month_product: Dict[Tuple[str, str], float],
+    unmet_by_month_product: Dict[Tuple[str, str, str, str], float],
     candidate_capacity_map: RawCapacityMap,
     display_capacity_map: RawCapacityMap,
 ) -> Dict[Tuple[str, str, str], float]:
@@ -632,66 +635,50 @@ def _assign_mode_b_unmet_tons(
 def _build_mode_b_unmet_assignment_rows(
     results: List[AllocationResult],
     loads: List[LoadRecord],
-    unmet_by_month_product: Dict[Tuple[str, str], float],
+    unmet_by_month_product: Dict[Tuple[str, str, str, str], float],
     candidate_capacity_map: RawCapacityMap,
     display_capacity_map: RawCapacityMap,
 ) -> List[dict[str, object]]:
     metadata_by_month_product = _build_month_product_metadata(loads, results)
-    base_load_by_month_wc = _build_internal_load_map(results, display_capacity_map)
-
-    unmet_by_month: Dict[str, Dict[str, float]] = defaultdict(dict)
-    for (month, product), unmet_tons in unmet_by_month_product.items():
-        unmet_by_month[month][product] = unmet_tons
-
     rows: List[dict[str, object]] = []
-    for month, product_unmet in unmet_by_month.items():
-        month_base_load = {
-            work_center: load_share
-            for (bucket, work_center), load_share in base_load_by_month_wc.items()
-            if bucket == month
-        }
-        solved_assignments = _solve_mode_b_capacity_only_unmet(
-            month=month,
-            product_unmet=product_unmet,
-            candidate_capacity_map=candidate_capacity_map,
-            display_capacity_map=display_capacity_map,
-            base_load_by_work_center=month_base_load,
+    for (month, product, plant, source_resource), unmet_tons in unmet_by_month_product.items():
+        metadata = metadata_by_month_product.get(
+            (month, product, plant, source_resource),
+            {
+                "product_family": "",
+                "plant": plant,
+                "planner_name": "",
+                "source_resource": source_resource,
+                "reference_demand_tons": 0.0,
+            },
         )
-        for (product, work_center), tons in solved_assignments.items():
-            metadata = metadata_by_month_product.get(
-                (month, product),
-                {"product_family": "", "plant": "", "reference_demand_tons": 0.0},
+        if candidate_capacity_map.get((product, source_resource), 0.0) <= EPSILON:
+            raise ValueError(
+                f"ModeB unmet assignment could not find baseline capacity resource for "
+                f"product={product}, month={month}, plant={plant}, resource={source_resource}."
             )
-            candidate_workcenters = _join_workcenters(
-                [
-                    candidate_work_center
-                    for (capacity_product, candidate_work_center), raw_capacity in candidate_capacity_map.items()
-                    if capacity_product == product and raw_capacity > EPSILON
-                ]
-            )
-            rows.append(
-                {
-                    "Month": month,
-                    "PlannerName": "",
-                    "Product": product,
-                    "ProductFamily": metadata["product_family"],
-                    "Plant": metadata["plant"],
-                    "Owner_WorkCenter": "",
-                    "Capacity_Candidate_WorkCenters": candidate_workcenters,
-                    "Attributed_WorkCenter": work_center,
-                    "Reference_Demand_Tons": float(metadata["reference_demand_tons"]),
-                    "Product_Unmet_Tons": float(product_unmet[product]),
-                    "Attributed_Unmet_Tons": tons,
-                    "Attribution_Rule": "ModeB baseline capacity workcenter",
-                }
-            )
-            base_load_by_month_wc[(month, work_center)] += _tons_to_load_share(product, work_center, tons, display_capacity_map)
-
+        rows.append(
+            {
+                "Month": month,
+                "PlannerName": metadata["planner_name"],
+                "Product": product,
+                "ProductFamily": metadata["product_family"],
+                "Plant": metadata["plant"],
+                "Source_Resource": source_resource,
+                "Owner_WorkCenter": source_resource,
+                "Capacity_Candidate_WorkCenters": source_resource,
+                "Attributed_WorkCenter": source_resource,
+                "Reference_Demand_Tons": float(metadata["reference_demand_tons"]),
+                "Product_Unmet_Tons": float(unmet_tons),
+                "Attributed_Unmet_Tons": float(unmet_tons),
+                "Attribution_Rule": "ModeB stage1 source resource workcenter",
+            }
+        )
     return rows
 
 
 def _assign_mode_b_outsourced_tons(
-    outsourced_by_month_product: Dict[Tuple[str, str], float],
+    outsourced_by_month_product: Dict[Tuple[str, str, str, str], float],
     routings: List[RoutingRecord],
 ) -> Dict[Tuple[str, str, str], float]:
     assigned_tons: Dict[Tuple[str, str, str], float] = defaultdict(float)
@@ -705,7 +692,7 @@ def _assign_mode_b_outsourced_tons(
             continue
         toller_candidates[routing.product].add(routing.work_center)
 
-    for (month, product), outsourced_tons in outsourced_by_month_product.items():
+    for (month, product, _plant, _source_resource), outsourced_tons in outsourced_by_month_product.items():
         work_centers = toller_candidates.get(product, set())
         if len(work_centers) != 1:
             raise ValueError(

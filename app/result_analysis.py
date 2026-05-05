@@ -8,6 +8,105 @@ from typing import Any
 import pandas as pd
 
 
+def _empty_planner_product_month_summary() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "Month",
+            "Product",
+            "Plant",
+            "Source_Resource",
+            "PlannerName",
+            "ProductFamily",
+            "Demand_Tons",
+            "Internal_Tons",
+            "Outsourced_Tons",
+            "Unmet_Tons",
+            "Supplied_Tons",
+            "Service_Level",
+        ]
+    )
+
+
+def _empty_planner_summary() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "PlannerName",
+            "Demand_Tons",
+            "Internal_Tons",
+            "Outsourced_Tons",
+            "Unmet_Tons",
+            "Supplied_Tons",
+            "Service_Level",
+        ]
+    )
+
+
+def _empty_product_month_summary() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "Month",
+            "Product",
+            "Plant",
+            "Source_Resource",
+            "ProductFamily",
+            "Demand_Tons",
+            "Internal_Tons",
+            "Outsourced_Tons",
+            "Unmet_Tons",
+            "Supplied_Tons",
+            "Service_Level",
+        ]
+    )
+
+
+def _empty_monthly_summary() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "Month",
+            "Demand_Tons",
+            "Internal_Tons",
+            "Outsourced_Tons",
+            "Unmet_Tons",
+            "Supplied_Tons",
+            "Service_Level",
+        ]
+    )
+
+
+def _empty_product_summary() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "Product",
+            "ProductFamily",
+            "Plant",
+            "Source_Resource",
+            "Demand_Tons",
+            "Internal_Tons",
+            "Outsourced_Tons",
+            "Unmet_Tons",
+            "Supplied_Tons",
+            "Service_Level",
+        ]
+    )
+
+
+def _empty_wc_long() -> pd.DataFrame:
+    return pd.DataFrame(columns=["WorkCenter", "Month", "LoadPct"])
+
+
+def _empty_wc_summary() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "WorkCenter",
+            "AvgLoadPct",
+            "PeakLoadPct",
+            "MinLoadPct",
+            "StdLoadPct",
+            "Over95Months",
+        ]
+    )
+
+
 def _as_text(value: Any) -> str:
     if value is None:
         return ""
@@ -47,19 +146,19 @@ def build_result_analysis(
             "run_info": run_info_df,
             "scenario_name": "",
             "mode_name": "",
-            "planner_product_month_summary": pd.DataFrame(),
-            "planner_summary": pd.DataFrame(),
-            "product_month_summary": pd.DataFrame(),
-            "monthly_summary": pd.DataFrame(),
-            "product_summary": pd.DataFrame(),
-            "wc_long": pd.DataFrame(),
-            "wc_summary": pd.DataFrame(),
+            "planner_product_month_summary": _empty_planner_product_month_summary(),
+            "planner_summary": _empty_planner_summary(),
+            "product_month_summary": _empty_product_month_summary(),
+            "monthly_summary": _empty_monthly_summary(),
+            "product_summary": _empty_product_summary(),
+            "wc_long": _empty_wc_long(),
+            "wc_summary": _empty_wc_summary(),
         }
 
     detail_df = detail_df.copy()
     run_info_df = run_info_df.copy()
 
-    for col in ("Month", "PlannerName", "Product", "ProductFamily", "Plant", "AllocationType", "WorkCenter", "RouteType"):
+    for col in ("Month", "PlannerName", "Product", "ProductFamily", "Plant", "Source_Resource", "AllocationType", "WorkCenter", "RouteType"):
         if col in detail_df.columns:
             detail_df[col] = detail_df[col].map(_as_text)
 
@@ -69,31 +168,29 @@ def build_result_analysis(
 
     if "PlannerName" in detail_df.columns and detail_df["PlannerName"].astype(str).str.strip().ne("").any():
         planner_product_month_summary = (
-            detail_df.groupby(["Month", "Product", "PlannerName"], as_index=False)
+            detail_df.groupby(["Month", "Product", "Plant", "Source_Resource", "PlannerName"], as_index=False)
             .agg(
                 ProductFamily=("ProductFamily", "first"),
-                Plant=("Plant", "first"),
                 Demand_Tons=("Demand_Tons", "max"),
                 Internal_Tons=("Allocated_Tons", "sum"),
                 Outsourced_Tons=("Outsourced_Tons", "sum"),
                 Unmet_Tons=("Unmet_Tons", "max"),
             )
-            .sort_values(["Month", "PlannerName", "Product"])
+            .sort_values(["Month", "PlannerName", "Product", "Plant", "Source_Resource"])
         )
     else:
         planner_product_month_summary = (
-            detail_df.groupby(["Month", "Product"], as_index=False)
+            detail_df.groupby(["Month", "Product", "Plant", "Source_Resource"], as_index=False)
             .agg(
                 ProductFamily=("ProductFamily", "first"),
-                Plant=("Plant", "first"),
                 Demand_Tons=("Demand_Tons", "max"),
                 Internal_Tons=("Allocated_Tons", "sum"),
                 Outsourced_Tons=("Outsourced_Tons", "sum"),
                 Unmet_Tons=("Unmet_Tons", "max"),
             )
-            .sort_values(["Month", "Product"])
+            .sort_values(["Month", "Product", "Plant", "Source_Resource"])
         )
-        planner_product_month_summary.insert(1, "PlannerName", "")
+        planner_product_month_summary.insert(4, "PlannerName", "")
 
     planner_product_month_summary["Supplied_Tons"] = (
         planner_product_month_summary["Internal_Tons"] + planner_product_month_summary["Outsourced_Tons"]
@@ -118,16 +215,15 @@ def build_result_analysis(
     planner_summary["Service_Level"] = compute_service_level(planner_summary, "Demand_Tons", "Supplied_Tons")
 
     product_month_summary = (
-        planner_product_month_summary.groupby(["Month", "Product"], as_index=False)
+        planner_product_month_summary.groupby(["Month", "Product", "Plant", "Source_Resource"], as_index=False)
         .agg(
             ProductFamily=("ProductFamily", "first"),
-            Plant=("Plant", "first"),
             Demand_Tons=("Demand_Tons", "sum"),
             Internal_Tons=("Internal_Tons", "sum"),
             Outsourced_Tons=("Outsourced_Tons", "sum"),
             Unmet_Tons=("Unmet_Tons", "sum"),
         )
-        .sort_values(["Month", "Product"])
+        .sort_values(["Month", "Product", "Plant", "Source_Resource"])
     )
     product_month_summary["Supplied_Tons"] = (
         product_month_summary["Internal_Tons"] + product_month_summary["Outsourced_Tons"]
@@ -152,7 +248,7 @@ def build_result_analysis(
     monthly_summary["Service_Level"] = compute_service_level(monthly_summary, "Demand_Tons", "Supplied_Tons")
 
     product_summary = (
-        planner_product_month_summary.groupby(["Product", "ProductFamily", "Plant"], as_index=False)
+        planner_product_month_summary.groupby(["Product", "ProductFamily", "Plant", "Source_Resource"], as_index=False)
         .agg(
             Demand_Tons=("Demand_Tons", "sum"),
             Internal_Tons=("Internal_Tons", "sum"),
@@ -164,8 +260,8 @@ def build_result_analysis(
     product_summary["Supplied_Tons"] = product_summary["Internal_Tons"] + product_summary["Outsourced_Tons"]
     product_summary["Service_Level"] = compute_service_level(product_summary, "Demand_Tons", "Supplied_Tons")
 
-    wc_long = pd.DataFrame()
-    wc_summary = pd.DataFrame()
+    wc_long = _empty_wc_long()
+    wc_summary = _empty_wc_summary()
     if not wc_load_df.empty and "WorkCenter" in wc_load_df.columns:
         wc_load_df = wc_load_df.copy()
         wc_load_df["WorkCenter"] = wc_load_df["WorkCenter"].map(_as_text)

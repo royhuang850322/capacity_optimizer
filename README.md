@@ -9,6 +9,7 @@
 - [Desktop Launcher Usage](/C:/Users/super/capacity_optimizer/docs/desktop_launcher_usage.md)
 - [Runtime Directory Strategy](/C:/Users/super/capacity_optimizer/docs/runtime_directory_strategy.md)
 - [PyInstaller One-Folder Build](/C:/Users/super/capacity_optimizer/docs/pyinstaller_onefolder_build.md)
+- [Next Project Standard Prompt (CN)](/C:/Users/super/capacity_optimizer/docs/NEXT_PROJECT_STANDARD_PROMPT_CN.md)
 
 产能优化工具，当前版本采用：
 - `CSV / Excel` 作为输入数据

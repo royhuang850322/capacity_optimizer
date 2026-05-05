@@ -7,6 +7,24 @@ The format is based on a simple release log:
 - `Changed` for behavior or workflow updates
 - `Fixed` for bug fixes
 
+## [v2.1.3] - 2026-05-05
+
+Demand-node modeling release with refreshed packaging artifacts.
+
+### Added
+- Published the reusable next-project prompt reference under `docs/NEXT_PROJECT_STANDARD_PROMPT_CN.md`
+- Added visible `Source_Resource` report labeling for allocation and unmet-attribution outputs
+
+### Changed
+- Load aggregation and optimization now use `Month + Product + Plant + Source_Resource` demand nodes instead of planner-based demand buckets
+- `PlannerName` remains visible in reports as a merged display field and no longer drives demand-splitting math
+- `ModeA` and `ModeB Stage 1` now consume only the original source resource capacity for each demand node
+- Tool version string updated to `v2.1.3`
+
+### Fixed
+- Zero-result `ModeA`/`ModeB` workbooks now write successfully across capacity-basis comparison sheets
+- Pressure-load, unmet-attribution, and report summaries now stay consistent with merged planner display and source-resource demand nodes
+
 ## [v2.1.2] - 2026-05-05
 
 Repository cleanup and current-state documentation release.
