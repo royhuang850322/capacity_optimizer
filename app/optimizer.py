@@ -7,12 +7,13 @@ ModeA:
   - Stage 1 may only consume the matching source resource from master_capacity
 
 ModeB:
-  - Stage 1: run the same source-resource baseline as ModeA
-  - Stage 2: reroute only the Stage 1 residual through product-level routing
-  - Stage 3: classify the remaining residual as Toller or Unmet
+  - solve source capacity, product-level routing, Toller, and Unmet in one global LP
+  - objective priority is Unmet first, then Toller, then route preference
+  - stage trace fields are retained for report compatibility
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Dict, List, Set, Tuple
 
 from ortools.linear_solver import pywraplp
@@ -21,6 +22,10 @@ from app.models import AllocationResult, CapacityRecord, LoadRecord, RoutingReco
 
 
 BIG_M = 1_000_000.0
+TOLLER_PENALTY = 100_000.0
+ALTERNATIVE_PENALTY = 1_000.0
+PRIMARY_PENALTY = 10.0
+CAPACITY_BASE_PENALTY = 0.0
 PRIORITY_BASE_PENALTY = 10
 EPSILON = 1e-6
 
@@ -30,6 +35,7 @@ EffCapMap = Dict[Tuple[str, str], float]
 NodeMetaMap = Dict[DemandKey, Tuple[str, str]]  # product_family, merged planner names
 EligibleRoute = Tuple[str, int, str, float]
 RouteMap = Dict[DemandKey, List[EligibleRoute]]
+GlobalRoute = Tuple[str, int, str, float, str, float]
 
 
 def run_optimization_mode_a(
@@ -39,14 +45,14 @@ def run_optimization_mode_a(
     verbose: bool = False,
 ) -> List[AllocationResult]:
     demand, node_meta = _build_demand(loads)
-    eff_cap = _build_eff_cap(capacities)
-    eligible = {
-        demand_key: _build_capacity_only_routes(demand_key, eff_cap)
-        for demand_key in demand
-    }
 
     all_results: List[AllocationResult] = []
     for month in months:
+        eff_cap = _build_eff_cap(capacities, month)
+        eligible = {
+            demand_key: _build_capacity_only_routes(demand_key, eff_cap)
+            for demand_key in demand
+        }
         month_nodes = _nodes_in_month(month, demand)
         month_demand = _slice_demand(demand, month, month_nodes)
         phase_results, residual = _run_lp_for_nodes(
@@ -81,18 +87,7 @@ def run_optimization_mode_b(
     verbose: bool = False,
 ) -> Tuple[List[AllocationResult], Set[str]]:
     demand, node_meta = _build_demand(loads)
-    baseline_eff_cap = _build_eff_cap(baseline_capacities)
-    routing_eff_cap = _build_eff_cap(routing_capacities)
-
-    stage1_routes = {
-        demand_key: _build_capacity_only_routes(demand_key, baseline_eff_cap)
-        for demand_key in demand
-    }
-    stage2_routes, toller_products = _build_mode_b_stage2_routes(
-        all_demand_keys=set(demand),
-        eff_cap=routing_eff_cap,
-        routings=routings,
-    )
+    toller_products = _eligible_toller_products(routings)
 
     all_results: List[AllocationResult] = []
     for month in months:
@@ -100,80 +95,19 @@ def run_optimization_mode_b(
         if not monthly_nodes:
             continue
 
-        month_results: List[AllocationResult] = []
-
-        stage1_results, residual_after_capacity = _run_lp_for_nodes(
+        baseline_eff_cap = _build_eff_cap(baseline_capacities, month)
+        routing_eff_cap = _build_eff_cap(routing_capacities, month)
+        month_results = _run_global_routing_lp_for_nodes(
             month=month,
             nodes=monthly_nodes,
             demand=_slice_demand(demand, month, monthly_nodes),
             full_demand=demand,
             node_meta=node_meta,
-            eff_cap=baseline_eff_cap,
-            eligible=stage1_routes,
-            wc_limits={},
-            allocation_source="Capacity_Base",
+            baseline_eff_cap=baseline_eff_cap,
+            routing_eff_cap=routing_eff_cap,
+            routings=routings,
             verbose=verbose,
-            phase_label="Capacity-Base",
         )
-        month_results.extend(stage1_results)
-
-        wc_used_after_stage1: Dict[str, float] = {}
-        _accumulate_wc_used(wc_used_after_stage1, stage1_results, routing_eff_cap)
-
-        stage2_nodes = [
-            demand_key
-            for demand_key, tons in residual_after_capacity.items()
-            if tons > EPSILON and stage2_routes.get(demand_key)
-        ]
-        stage2_results, stage2_residual = _run_lp_for_nodes(
-            month=month,
-            nodes=stage2_nodes,
-            demand=_residual_to_demand(residual_after_capacity),
-            full_demand=demand,
-            node_meta=node_meta,
-            eff_cap=routing_eff_cap,
-            eligible=stage2_routes,
-            wc_limits=_remaining_wc_limits(wc_used_after_stage1),
-            allocation_source="Routing_Reroute",
-            verbose=verbose,
-            phase_label="Routing-Reroute",
-        )
-        month_results.extend(stage2_results)
-
-        residual_after_routing = dict(residual_after_capacity)
-        for demand_key in stage2_nodes:
-            residual_after_routing[demand_key] = stage2_residual.get(demand_key, 0.0)
-
-        final_unmet: Dict[DemandKey, float] = {}
-        final_outsourced: Dict[DemandKey, float] = {}
-        outsource_residual: Dict[DemandKey, float] = {}
-        unmet_residual: Dict[DemandKey, float] = {}
-        for demand_key, residual_tons in residual_after_routing.items():
-            if residual_tons <= EPSILON:
-                continue
-            product = demand_key[1]
-            if product in toller_products:
-                final_outsourced[demand_key] = residual_tons
-                outsource_residual[demand_key] = residual_tons
-            else:
-                final_unmet[demand_key] = residual_tons
-                unmet_residual[demand_key] = residual_tons
-
-        month_results.extend(_build_outsource_rows(outsource_residual, demand, node_meta))
-        month_results.extend(_build_unmet_rows(unmet_residual, demand, node_meta))
-
-        _apply_stage_trace(
-            month_results,
-            month=month,
-            residual_after_capacity=residual_after_capacity,
-            residual_after_routing=residual_after_routing,
-        )
-        _apply_final_balances(
-            month_results,
-            final_unmet=final_unmet,
-            final_outsourced=final_outsourced,
-        )
-
         all_results.extend(month_results)
 
     return all_results, toller_products
@@ -238,11 +172,107 @@ def _build_demand(loads: List[LoadRecord]) -> Tuple[DemandMap, NodeMetaMap]:
     return demand, node_meta
 
 
-def _build_eff_cap(capacities: List[CapacityRecord]) -> EffCapMap:
+def _build_eff_cap(capacities: List[CapacityRecord], month: str | None = None) -> EffCapMap:
+    if month:
+        capacities = _select_effective_capacity_records(capacities, month)
     eff_cap: EffCapMap = {}
     for record in capacities:
         eff_cap[(record.product, record.work_center)] = record.effective_monthly_capacity_tons
     return eff_cap
+
+
+def _select_effective_capacity_records(
+    capacities: List[CapacityRecord],
+    month: str,
+) -> List[CapacityRecord]:
+    month_key = _month_to_index(month)
+    grouped: Dict[Tuple[str, str], List[CapacityRecord]] = {}
+    for record in capacities:
+        grouped.setdefault((record.product, record.work_center), []).append(record)
+
+    selected: List[CapacityRecord] = []
+    for records in grouped.values():
+        concrete_matches = [
+            record
+            for record in records
+            if _capacity_window_covers(record, month_key)
+        ]
+        if concrete_matches:
+            selected.append(concrete_matches[0])
+            continue
+
+        default_matches = [
+            record
+            for record in records
+            if _is_default_capacity_window(record)
+        ]
+        if default_matches:
+            selected.append(default_matches[0])
+    return selected
+
+
+def _capacity_window_covers(record: CapacityRecord, month_key: int) -> bool:
+    if _is_default_capacity_window(record):
+        return False
+    parsed = _capacity_window(record)
+    if parsed is None:
+        return False
+    start_month, end_month = parsed
+    return start_month <= month_key <= end_month
+
+
+def _is_default_capacity_window(record: CapacityRecord) -> bool:
+    start = _capacity_date_text(record.effective_from)
+    end = _capacity_date_text(record.effective_to)
+    if not start and not end:
+        return True
+    return start == "99999" and end == "99999"
+
+
+def _capacity_window(record: CapacityRecord) -> Tuple[int, int] | None:
+    start = _capacity_date_text(record.effective_from)
+    end = _capacity_date_text(record.effective_to)
+    if not start or not end or start == "99999" or end == "99999":
+        return None
+    try:
+        return _parse_capacity_month(start), _parse_capacity_month(end)
+    except ValueError:
+        return None
+
+
+def _parse_capacity_month(value: str) -> int:
+    text = _capacity_date_text(value)
+    if not text:
+        raise ValueError("empty capacity month")
+    if text == "99999":
+        raise ValueError("default capacity marker is not a concrete month")
+    if text.isdigit() and len(text) > 4:
+        base = datetime(1899, 12, 30)
+        dt = base + timedelta(days=int(text))
+        return dt.year * 12 + dt.month
+    normalized = text.replace("/", "-").replace(".", "-")
+    for fmt in ("%Y-%m-%d", "%Y-%m", "%Y-%m-%d %H:%M:%S"):
+        try:
+            dt = datetime.strptime(normalized, fmt)
+            return dt.year * 12 + dt.month
+        except ValueError:
+            pass
+    dt = datetime.fromisoformat(normalized)
+    return dt.year * 12 + dt.month
+
+
+def _capacity_date_text(value) -> str:
+    text = str(value or "").strip()
+    if text.casefold() in {"", "nan", "none", "nat"}:
+        return ""
+    if text.endswith(".0") and text[:-2].isdigit():
+        return text[:-2]
+    return text
+
+
+def _month_to_index(month: str) -> int:
+    year, month_num = int(str(month)[:4]), int(str(month)[5:7])
+    return year * 12 + month_num
 
 
 def _build_capacity_only_routes(
@@ -301,6 +331,250 @@ def _build_mode_b_stage2_routes(
         },
         toller_products,
     )
+
+
+def _run_global_routing_lp_for_nodes(
+    month: str,
+    nodes: List[DemandKey],
+    demand: DemandMap,
+    full_demand: DemandMap,
+    node_meta: NodeMetaMap,
+    baseline_eff_cap: EffCapMap,
+    routing_eff_cap: EffCapMap,
+    routings: List[RoutingRecord],
+    verbose: bool = False,
+) -> List[AllocationResult]:
+    nodes = [demand_key for demand_key in nodes if demand_key in demand]
+    if not nodes:
+        return []
+
+    routes = _build_global_routes(nodes, baseline_eff_cap, routing_eff_cap, routings)
+    toller_products = _eligible_toller_products(routings)
+
+    solver = pywraplp.Solver.CreateSolver("GLOP")
+    if not solver:
+        raise RuntimeError("OR-Tools GLOP solver could not be created.")
+    solver.SuppressOutput()
+    inf = solver.infinity()
+
+    x: Dict[Tuple[DemandKey, str, str], pywraplp.Variable] = {}
+    outsource: Dict[DemandKey, pywraplp.Variable] = {}
+    unmet: Dict[DemandKey, pywraplp.Variable] = {}
+
+    for demand_key in nodes:
+        demand_tons = demand[demand_key]
+        unmet[demand_key] = solver.NumVar(0.0, demand_tons, f"unmet_{hash(demand_key)}")
+        if demand_key[1] in toller_products:
+            outsource[demand_key] = solver.NumVar(0.0, demand_tons, f"out_{hash(demand_key)}")
+        for wc, _priority, _route_type, _penalty, allocation_source, cap in routes.get(demand_key, []):
+            if cap > 0:
+                x[(demand_key, wc, allocation_source)] = solver.NumVar(
+                    0.0,
+                    demand_tons,
+                    f"x_{hash(demand_key)}_{wc}_{allocation_source}",
+                )
+
+    for demand_key in nodes:
+        demand_tons = demand[demand_key]
+        constraint = solver.Constraint(demand_tons, demand_tons, f"dem_{hash(demand_key)}")
+        constraint.SetCoefficient(unmet[demand_key], 1.0)
+        if demand_key in outsource:
+            constraint.SetCoefficient(outsource[demand_key], 1.0)
+        for wc, _priority, _route_type, _penalty, allocation_source, _cap in routes.get(demand_key, []):
+            variable = x.get((demand_key, wc, allocation_source))
+            if variable is not None:
+                constraint.SetCoefficient(variable, 1.0)
+
+    all_wcs = {wc for _demand_key, wc, _source in x}
+    for wc in all_wcs:
+        constraint = solver.Constraint(-inf, 1.0, f"cap_{wc}")
+        for demand_key in nodes:
+            for route_wc, _priority, _route_type, _penalty, allocation_source, cap in routes.get(demand_key, []):
+                if route_wc != wc:
+                    continue
+                variable = x.get((demand_key, wc, allocation_source))
+                if variable is not None and cap > 0:
+                    constraint.SetCoefficient(variable, 1.0 / cap)
+
+    objective = solver.Objective()
+    objective.SetMinimization()
+    for demand_key, variable in unmet.items():
+        objective.SetCoefficient(variable, BIG_M)
+    for demand_key, variable in outsource.items():
+        objective.SetCoefficient(variable, TOLLER_PENALTY)
+    for (demand_key, wc, allocation_source), variable in x.items():
+        route = _find_global_route(demand_key, wc, allocation_source, routes)
+        if route is None:
+            continue
+        _wc, priority, route_type, penalty, _allocation_source, _cap = route
+        objective.SetCoefficient(variable, _global_route_objective_penalty(route_type, priority, penalty))
+
+    status = solver.Solve()
+    if status not in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
+        print(f"  [WARN] Solver status {status} for month {month} Global-Routing")
+
+    internal_results: List[AllocationResult] = []
+    capacity_base_allocated: Dict[DemandKey, float] = {}
+    final_unmet: Dict[DemandKey, float] = {}
+    final_outsourced: Dict[DemandKey, float] = {}
+
+    for demand_key in nodes:
+        demand_month, product, plant, source_resource = demand_key
+        display_demand = full_demand.get(demand_key, demand[demand_key])
+        family, planner_names = node_meta.get(demand_key, ("", ""))
+        final_unmet[demand_key] = max(unmet[demand_key].solution_value(), 0.0)
+        if demand_key in outsource:
+            final_outsourced[demand_key] = max(outsource[demand_key].solution_value(), 0.0)
+
+        for wc, priority, route_type, _penalty, allocation_source, cap in routes.get(demand_key, []):
+            variable = x.get((demand_key, wc, allocation_source))
+            if variable is None:
+                continue
+            allocated_tons = max(variable.solution_value(), 0.0)
+            rounded_allocated = round(allocated_tons, 4)
+            if allocated_tons < EPSILON or rounded_allocated <= 0.0:
+                continue
+            if allocation_source == "Capacity_Base":
+                capacity_base_allocated[demand_key] = capacity_base_allocated.get(demand_key, 0.0) + allocated_tons
+            internal_results.append(AllocationResult(
+                month=demand_month,
+                product=product,
+                product_family=family,
+                plant=plant,
+                source_resource=source_resource,
+                allocation_type="Internal",
+                work_center=wc,
+                route_type=route_type,
+                priority=priority,
+                demand_tons=round(display_demand, 4),
+                allocated_tons=rounded_allocated,
+                outsourced_tons=0.0,
+                unmet_tons=0.0,
+                capacity_share_pct=round(100.0 * allocated_tons / cap, 2),
+                planner_name=planner_names,
+                allocation_source=allocation_source,
+            ))
+
+    outsource_rows = _build_outsource_rows(final_outsourced, full_demand, node_meta)
+    unmet_rows = _build_unmet_rows(final_unmet, full_demand, node_meta)
+    month_results = [*internal_results, *outsource_rows, *unmet_rows]
+
+    residual_after_capacity = {
+        demand_key: max(demand[demand_key] - capacity_base_allocated.get(demand_key, 0.0), 0.0)
+        for demand_key in nodes
+    }
+    residual_after_routing = {
+        demand_key: final_unmet.get(demand_key, 0.0)
+        for demand_key in nodes
+    }
+    _apply_stage_trace(
+        month_results,
+        month=month,
+        residual_after_capacity=residual_after_capacity,
+        residual_after_routing=residual_after_routing,
+    )
+    _apply_final_balances(
+        month_results,
+        final_unmet=final_unmet,
+        final_outsourced=final_outsourced,
+    )
+
+    if verbose:
+        total_unmet = sum(final_unmet.values())
+        total_outsourced = sum(final_outsourced.values())
+        print(
+            f"  {month} [Global-Routing] {len(nodes)} nodes | "
+            f"unmet = {total_unmet:,.1f} tons | outsourced = {total_outsourced:,.1f} tons | "
+            f"obj = {objective.Value():,.2f}"
+        )
+
+    return month_results
+
+
+def _build_global_routes(
+    nodes: List[DemandKey],
+    baseline_eff_cap: EffCapMap,
+    routing_eff_cap: EffCapMap,
+    routings: List[RoutingRecord],
+) -> Dict[DemandKey, List[GlobalRoute]]:
+    route_rows_by_product: Dict[str, List[RoutingRecord]] = {}
+    for routing in routings:
+        if routing.product and routing.eligible_flag and not _is_toller_route(routing.route_type):
+            route_rows_by_product.setdefault(routing.product, []).append(routing)
+
+    routes: Dict[DemandKey, List[GlobalRoute]] = {}
+    for demand_key in nodes:
+        product = demand_key[1]
+        source_resource = demand_key[3]
+        route_map: Dict[Tuple[str, str], GlobalRoute] = {}
+
+        baseline_cap = baseline_eff_cap.get((product, source_resource), 0.0)
+        if source_resource and baseline_cap > 0:
+            route_map[(source_resource, "Capacity_Base")] = (
+                source_resource,
+                1,
+                "Capacity",
+                1.0,
+                "Capacity_Base",
+                baseline_cap,
+            )
+
+        for routing in route_rows_by_product.get(product, []):
+            wc = routing.work_center
+            cap = routing_eff_cap.get((product, wc), 0.0)
+            if not wc or cap <= 0:
+                continue
+            if wc == source_resource and baseline_cap > 0:
+                continue
+            route = (
+                wc,
+                routing.priority,
+                routing.route_type,
+                _route_penalty(routing),
+                "Routing_Reroute",
+                cap,
+            )
+            key = (wc, "Routing_Reroute")
+            existing = route_map.get(key)
+            if existing is None or route[1] < existing[1]:
+                route_map[key] = route
+
+        routes[demand_key] = sorted(
+            route_map.values(),
+            key=lambda route: (_global_route_objective_penalty(route[2], route[1], route[3]), route[0], route[4]),
+        )
+    return routes
+
+
+def _eligible_toller_products(routings: List[RoutingRecord]) -> Set[str]:
+    return {
+        routing.product
+        for routing in routings
+        if routing.product and routing.eligible_flag and _is_toller_route(routing.route_type)
+    }
+
+
+def _find_global_route(
+    demand_key: DemandKey,
+    wc: str,
+    allocation_source: str,
+    routes: Dict[DemandKey, List[GlobalRoute]],
+) -> GlobalRoute | None:
+    for route in routes.get(demand_key, []):
+        if route[0] == wc and route[4] == allocation_source:
+            return route
+    return None
+
+
+def _global_route_objective_penalty(route_type: str, priority: int, penalty: float) -> float:
+    normalized = str(route_type or "").strip().lower()
+    if normalized == "capacity":
+        base = CAPACITY_BASE_PENALTY
+    elif normalized == "alternative":
+        base = ALTERNATIVE_PENALTY
+    else:
+        base = PRIMARY_PENALTY
+    return base + max(float(penalty or 0.0), 0.0) + max(priority - 1, 0) * 0.01
 
 
 def _route_penalty(routing: RoutingRecord) -> float:

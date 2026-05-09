@@ -541,6 +541,10 @@ def _build_capacity_rows(
             "Annual Max Capacity Tons": annual_capacity,
             "Annual Planned Capacity Tons": annual_capacity,
             "Utilization Target": UTILIZATION_TARGET,
+            "Plant": spec["plant"],
+            "From": "99999",
+            "To": "99999",
+            "Comment": "Default capacity",
         })
     return rows
 
@@ -675,6 +679,10 @@ def main() -> None:
             "Annual Max Capacity Tons",
             "Annual Planned Capacity Tons",
             "Utilization Target",
+            "Plant",
+            "From",
+            "To",
+            "Comment",
         ],
     )
     _write_csv(

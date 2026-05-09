@@ -12,6 +12,7 @@ ModeB:
   - allows routing-only resources for Stage 2
 """
 from collections import defaultdict
+from datetime import datetime, timedelta
 from typing import Dict, List, Set, Tuple
 
 from app.models import CapacityRecord, LoadRecord, RoutingRecord, ValidationIssue
@@ -129,17 +130,10 @@ def _check_load_records(loads: List[LoadRecord]) -> List[ValidationIssue]:
 
 def _check_capacity_records(capacities: List[CapacityRecord]) -> List[ValidationIssue]:
     issues: List[ValidationIssue] = []
-    seen: Set[Tuple[str, str]] = set()
+    grouped: Dict[Tuple[str, str], List[CapacityRecord]] = defaultdict(list)
 
     for record in capacities:
-        key = (record.product, record.work_center)
-        if key in seen:
-            issues.append(ValidationIssue(
-                severity="WARNING",
-                check="CapacityDuplicate",
-                detail=f"Duplicate capacity entry for {record.product} / {record.work_center}.",
-            ))
-        seen.add(key)
+        grouped[(record.product, record.work_center)].append(record)
 
         if record.annual_capacity_tons <= 0:
             issues.append(ValidationIssue(
@@ -147,6 +141,60 @@ def _check_capacity_records(capacities: List[CapacityRecord]) -> List[Validation
                 check="CapacityZero",
                 detail=f"Annual_Capacity_Tons <= 0 for {record.product} / {record.work_center}.",
             ))
+
+    for (product, work_center), records in sorted(grouped.items()):
+        default_rows = [record for record in records if _is_default_capacity_window(record)]
+        if len(default_rows) > 1:
+            issues.append(ValidationIssue(
+                severity="ERROR",
+                check="CapacityDefaultDuplicate",
+                detail=(
+                    f"Product='{product}' / Resource='{work_center}' has multiple default "
+                    f"99999/99999 capacity rows: {_capacity_row_refs(default_rows)}."
+                ),
+            ))
+
+        concrete_windows: list[tuple[int, int, CapacityRecord]] = []
+        for record in records:
+            if _is_default_capacity_window(record):
+                continue
+            parsed = _capacity_window(record)
+            if parsed is None:
+                issues.append(ValidationIssue(
+                    severity="ERROR",
+                    check="CapacityEffectiveWindowInvalid",
+                    detail=(
+                        f"Invalid from/to for Product='{product}' / Resource='{work_center}' "
+                        f"at {_capacity_row_ref(record)}. Use valid dates or 99999/99999."
+                    ),
+                ))
+                continue
+            start_month, end_month = parsed
+            if start_month > end_month:
+                issues.append(ValidationIssue(
+                    severity="ERROR",
+                    check="CapacityEffectiveWindowInvalid",
+                    detail=(
+                        f"from is after to for Product='{product}' / Resource='{work_center}' "
+                        f"at {_capacity_row_ref(record)}."
+                    ),
+                ))
+                continue
+            concrete_windows.append((start_month, end_month, record))
+
+        concrete_windows.sort(key=lambda item: (item[0], item[1], item[2].row_num or 0))
+        for idx, left in enumerate(concrete_windows):
+            for right in concrete_windows[idx + 1:]:
+                if right[0] > left[1]:
+                    break
+                issues.append(ValidationIssue(
+                    severity="ERROR",
+                    check="CapacityEffectiveWindowOverlap",
+                    detail=(
+                        f"Overlapping capacity windows for Product='{product}' / Resource='{work_center}': "
+                        f"{_capacity_row_ref(left[2])} overlaps {_capacity_row_ref(right[2])}."
+                    ),
+                ))
 
     return issues
 
@@ -231,7 +279,7 @@ def _check_cross_coverage(
                     check="NoCoverageCapacity",
                     detail=f"Product '{product}' in load has no capacity record.",
                 ))
-        issues.extend(_check_planner_resource_capacity_coverage(loads, cap_keys))
+        issues.extend(_check_planner_resource_capacity_coverage(loads, cap_keys, capacities))
         return issues
 
     routing_capacities = routing_capacities or capacities
@@ -255,7 +303,7 @@ def _check_cross_coverage(
         else:
             internal_route_wcs[routing.product].add(routing.work_center)
 
-    issues.extend(_check_planner_resource_capacity_coverage(loads, cap_keys))
+    issues.extend(_check_planner_resource_capacity_coverage(loads, cap_keys, capacities))
     issues.extend(_check_mode_b_product_toller_routes(load_products, routings))
 
     for product in sorted(load_products):
@@ -294,16 +342,22 @@ def _check_cross_coverage(
 def _check_planner_resource_capacity_coverage(
     loads: List[LoadRecord],
     cap_keys: Set[Tuple[str, str]],
+    capacities: List[CapacityRecord] | None = None,
 ) -> List[ValidationIssue]:
     issues: List[ValidationIssue] = []
-    seen: Set[Tuple[str, str]] = set()
+    seen: Set[Tuple[str, str, str]] = set()
+    capacities_by_key: Dict[Tuple[str, str], List[CapacityRecord]] = defaultdict(list)
+    if capacities is not None:
+        for capacity in capacities:
+            capacities_by_key[(capacity.product, capacity.work_center)].append(capacity)
 
     for record in loads:
         for resource in _split_merged_text(record.resource_group_owner):
             key = (record.product, resource)
-            if key in seen:
+            month_key = (record.product, resource, record.month)
+            if month_key in seen:
                 continue
-            seen.add(key)
+            seen.add(month_key)
             if key not in cap_keys:
                 issues.append(ValidationIssue(
                     severity="ERROR",
@@ -311,6 +365,20 @@ def _check_planner_resource_capacity_coverage(
                     detail=(
                         f"Planner load references Product='{record.product}' / Resource='{resource}' "
                         "but no matching master_capacity row exists."
+                    ),
+                ))
+                continue
+            if capacities is not None and not _has_effective_capacity(
+                capacities_by_key.get(key, []),
+                record.month,
+            ):
+                issues.append(ValidationIssue(
+                    severity="ERROR",
+                    check="CapacityEffectiveMissing",
+                    detail=(
+                        f"{_row_ref(record)}No effective capacity found for Product='{record.product}' / "
+                        f"Resource='{resource}' / Month='{record.month}'. Add a matching from/to row "
+                        "or one 99999/99999 default capacity row."
                     ),
                 ))
     return issues
@@ -344,6 +412,84 @@ def _check_mode_b_product_toller_routes(
             ))
 
     return issues
+
+
+def _capacity_row_ref(record: CapacityRecord) -> str:
+    parts = []
+    if record.source_file:
+        parts.append(record.source_file)
+    if record.row_num is not None:
+        parts.append(f"row {record.row_num}")
+    return f"[{' '.join(parts)}]" if parts else "[unknown row]"
+
+
+def _capacity_row_refs(records: List[CapacityRecord]) -> str:
+    return ", ".join(_capacity_row_ref(record) for record in records)
+
+
+def _is_default_capacity_window(record: CapacityRecord) -> bool:
+    start = _capacity_date_text(record.effective_from)
+    end = _capacity_date_text(record.effective_to)
+    if not start and not end:
+        return True
+    return start == "99999" and end == "99999"
+
+
+def _capacity_window(record: CapacityRecord) -> Tuple[int, int] | None:
+    start = _capacity_date_text(record.effective_from)
+    end = _capacity_date_text(record.effective_to)
+    if not start or not end or start == "99999" or end == "99999":
+        return None
+    try:
+        return _parse_capacity_month(start), _parse_capacity_month(end)
+    except Exception:
+        return None
+
+
+def _parse_capacity_month(value: str) -> int:
+    text = _capacity_date_text(value)
+    if not text or text == "99999":
+        raise ValueError("invalid capacity month")
+    if text.isdigit() and len(text) > 4:
+        base = datetime(1899, 12, 30)
+        dt = base + timedelta(days=int(text))
+        return dt.year * 12 + dt.month
+    normalized = text.replace("/", "-").replace(".", "-")
+    for fmt in ("%Y-%m-%d", "%Y-%m", "%Y-%m-%d %H:%M:%S"):
+        try:
+            dt = datetime.strptime(normalized, fmt)
+            return dt.year * 12 + dt.month
+        except ValueError:
+            pass
+    dt = datetime.fromisoformat(normalized)
+    return dt.year * 12 + dt.month
+
+
+def _capacity_date_text(value) -> str:
+    text = str(value or "").strip()
+    if text.casefold() in {"", "nan", "none", "nat"}:
+        return ""
+    if text.endswith(".0") and text[:-2].isdigit():
+        return text[:-2]
+    return text
+
+
+def _month_to_index(month: str) -> int:
+    return int(month[:4]) * 12 + int(month[5:7])
+
+
+def _has_effective_capacity(records: List[CapacityRecord], month: str) -> bool:
+    try:
+        month_key = _month_to_index(month)
+    except Exception:
+        return True
+    if any(
+        (window := _capacity_window(record)) is not None and window[0] <= month_key <= window[1]
+        for record in records
+        if not _is_default_capacity_window(record)
+    ):
+        return True
+    return any(_is_default_capacity_window(record) for record in records)
 
 
 def _valid_month(month: str) -> bool:

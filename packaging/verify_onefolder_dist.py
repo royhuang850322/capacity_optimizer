@@ -25,7 +25,7 @@ def _resolve_resource_root(dist_root: Path) -> Path:
 def verify_dist_layout(
     dist_root: Path,
     *,
-    app_name: str,
+    app_name: str = "CapacityOptimizer",
     required_resource_subpaths: tuple[str, ...] = (),
 ) -> None:
     required_paths = [dist_root / f"{app_name}.exe"]

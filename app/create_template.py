@@ -478,7 +478,7 @@ def _create_control_panel(worksheet, lists_ws, scenario_options: list[str]) -> N
     worksheet.row_dimensions[3].height = 32
 
     now = datetime.now()
-    default_scenario = scenario_options[0] if scenario_options else "Base Scenario"
+    default_scenario = scenario_options[0] if scenario_options else "All"
 
     migration_rows = [
         ("Project_Root_Folder", DEFAULT_PROJECT_ROOT, "Project root folder; '..' means one level above this workbook"),
@@ -640,10 +640,10 @@ def _scenario_options(load_dir: str) -> list[str]:
         try:
             options = discover_planner_scenarios(load_dir)
             if options:
-                return options
+                return ["All", *[value for value in options if value.casefold() != "all"]]
         except Exception:
             pass
-    return ["Base Scenario", "Baseline", "Case90"]
+    return ["All", "Baseline", "Case90"]
 
 
 def _write_header(worksheet, row: int, labels: list[str]) -> None:

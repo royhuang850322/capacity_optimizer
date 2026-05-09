@@ -209,7 +209,7 @@ def _default_settings(paths: RuntimePaths) -> dict[str, str]:
     return {
         "workspace_root": str(paths.user_workspace_dir),
         "output_file_name": "capacity_result.xlsx",
-        "scenario_name": "Baseline",
+        "scenario_name": "All",
         "start_year": str(now.year),
         "start_month": str(now.month),
         "horizon_months": "12",
@@ -803,11 +803,12 @@ if PYSIDE6_AVAILABLE:
                     scenarios = discover_planner_scenarios(folder)
                 except Exception:
                     scenarios = []
-            if not scenarios:
-                scenarios = ["Baseline"]
+            scenarios = ["All", *[value for value in scenarios if value.casefold() != "all"]]
 
             current_value = self.scenario_combo.currentText().strip()
             target = (preferred or current_value or "").strip()
+            if target.casefold() in {"base", "base scenario"}:
+                target = "All"
             if target and target not in scenarios:
                 scenarios.append(target)
 

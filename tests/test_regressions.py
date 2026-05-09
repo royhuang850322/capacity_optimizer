@@ -647,6 +647,264 @@ class RegressionTests(unittest.TestCase):
         self.assertAlmostEqual(_final_unmet(max_results), 0.0, places=4)
         self.assertAlmostEqual(_final_unmet(planner_results), 20.0, places=4)
 
+    def test_mode_b_global_routing_moves_flexible_product_to_alternative(self):
+        loads = [
+            LoadRecord(
+                month="2025-01",
+                planner_name="PlannerNoAlt",
+                product="P_NOALT",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=100.0,
+                resource_group_owner="EV2",
+            ),
+            LoadRecord(
+                month="2025-01",
+                planner_name="PlannerAlt",
+                product="P_ALT",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=100.0,
+                resource_group_owner="EV2",
+            ),
+        ]
+        baseline_capacities = [
+            CapacityRecord(product="P_NOALT", work_center="EV2", annual_capacity_tons=1200.0, utilization_target=1.0),
+            CapacityRecord(product="P_ALT", work_center="EV2", annual_capacity_tons=1200.0, utilization_target=1.0),
+        ]
+        routing_capacities = [
+            *baseline_capacities,
+            CapacityRecord(product="P_ALT", work_center="SA3", annual_capacity_tons=1200.0, utilization_target=1.0),
+        ]
+        routings = [
+            RoutingRecord(
+                product="P_ALT",
+                product_family="F1",
+                work_center="SA3",
+                priority=1,
+                eligible_flag=True,
+                route_type="Alternative",
+            ),
+        ]
+
+        results, _ = run_optimization_mode_b(
+            months=["2025-01"],
+            loads=loads,
+            baseline_capacities=baseline_capacities,
+            routing_capacities=routing_capacities,
+            routings=routings,
+        )
+
+        allocated = {
+            (row.product, row.work_center, row.allocation_source): row.allocated_tons
+            for row in results
+            if row.allocation_type == "Internal"
+        }
+        final_unmet = {
+            row.product: row.unmet_tons
+            for row in results
+            if row.allocation_type == "Unmet"
+        }
+
+        self.assertAlmostEqual(allocated[("P_NOALT", "EV2", "Capacity_Base")], 100.0, places=4)
+        self.assertAlmostEqual(allocated[("P_ALT", "SA3", "Routing_Reroute")], 100.0, places=4)
+        self.assertEqual(final_unmet, {})
+
+    def test_capacity_effective_windows_are_selected_by_month(self):
+        loads = [
+            LoadRecord(
+                month="2025-01",
+                planner_name="PlannerA",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=80.0,
+                resource_group_owner="WC1",
+            ),
+            LoadRecord(
+                month="2025-02",
+                planner_name="PlannerA",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=80.0,
+                resource_group_owner="WC1",
+            ),
+        ]
+        capacities = [
+            CapacityRecord(
+                product="P1",
+                work_center="WC1",
+                annual_capacity_tons=600.0,
+                utilization_target=1.0,
+                effective_from="99999",
+                effective_to="99999",
+            ),
+            CapacityRecord(
+                product="P1",
+                work_center="WC1",
+                annual_capacity_tons=1200.0,
+                utilization_target=1.0,
+                effective_from="2025-01-31",
+                effective_to="2025-01-31",
+            ),
+        ]
+
+        results = run_optimization_mode_a(
+            months=["2025-01", "2025-02"],
+            loads=loads,
+            capacities=capacities,
+        )
+
+        internal_by_month = {
+            row.month: row.allocated_tons
+            for row in results
+            if row.allocation_type == "Internal"
+        }
+        unmet_by_month = {
+            row.month: row.unmet_tons
+            for row in results
+            if row.allocation_type == "Unmet"
+        }
+
+        self.assertAlmostEqual(internal_by_month["2025-01"], 80.0, places=4)
+        self.assertAlmostEqual(internal_by_month["2025-02"], 50.0, places=4)
+        self.assertAlmostEqual(unmet_by_month["2025-02"], 30.0, places=4)
+
+    def test_validate_rejects_overlapping_capacity_windows(self):
+        capacities = [
+            CapacityRecord(
+                product="P1",
+                work_center="WC1",
+                annual_capacity_tons=1200.0,
+                utilization_target=1.0,
+                effective_from="2027-01-01",
+                effective_to="2027-03-01",
+                source_file="master_capacity.csv",
+                row_num=2,
+            ),
+            CapacityRecord(
+                product="P1",
+                work_center="WC1",
+                annual_capacity_tons=1200.0,
+                utilization_target=1.0,
+                effective_from="2027-03-31",
+                effective_to="2027-04-30",
+                source_file="master_capacity.csv",
+                row_num=3,
+            ),
+        ]
+
+        issues = validate([], capacities, [], mode="ModeA")
+        overlap_details = [issue.detail for issue in issues if issue.check == "CapacityEffectiveWindowOverlap"]
+
+        self.assertEqual(len(overlap_details), 1)
+        self.assertIn("row 2", overlap_details[0])
+        self.assertIn("row 3", overlap_details[0])
+
+    def test_validate_rejects_duplicate_capacity_default_rows(self):
+        capacities = [
+            CapacityRecord(
+                product="P1",
+                work_center="WC1",
+                annual_capacity_tons=1200.0,
+                utilization_target=1.0,
+                effective_from="99999",
+                effective_to="99999",
+                row_num=2,
+            ),
+            CapacityRecord(
+                product="P1",
+                work_center="WC1",
+                annual_capacity_tons=900.0,
+                utilization_target=1.0,
+                effective_from="99999",
+                effective_to="99999",
+                row_num=3,
+            ),
+        ]
+
+        issues = validate([], capacities, [], mode="ModeA")
+
+        self.assertIn(("ERROR", "CapacityDefaultDuplicate"), {(i.severity, i.check) for i in issues})
+
+    def test_capacity_default_window_accepts_nan_blank_and_excel_numeric_marker(self):
+        loads = [
+            LoadRecord(
+                month="2025-02",
+                planner_name="PlannerA",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=10.0,
+                resource_group_owner="WC1",
+            ),
+            LoadRecord(
+                month="2025-02",
+                planner_name="PlannerB",
+                product="P2",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=10.0,
+                resource_group_owner="WC1",
+            ),
+        ]
+        capacities = [
+            CapacityRecord(
+                product="P1",
+                work_center="WC1",
+                annual_capacity_tons=1200.0,
+                utilization_target=1.0,
+                effective_from=float("nan"),
+                effective_to=float("nan"),
+            ),
+            CapacityRecord(
+                product="P2",
+                work_center="WC1",
+                annual_capacity_tons=1200.0,
+                utilization_target=1.0,
+                effective_from="99999.0",
+                effective_to="99999.0",
+            ),
+        ]
+
+        issues = validate(loads, capacities, [], mode="ModeA")
+
+        self.assertNotIn(("ERROR", "CapacityEffectiveWindowInvalid"), {(i.severity, i.check) for i in issues})
+        self.assertNotIn(("ERROR", "CapacityEffectiveMissing"), {(i.severity, i.check) for i in issues})
+
+    def test_validate_rejects_missing_effective_capacity_for_planner_month(self):
+        loads = [
+            LoadRecord(
+                month="2025-02",
+                planner_name="PlannerA",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=10.0,
+                resource_group_owner="WC1",
+                source_file="planner.csv",
+                row_num=2,
+            ),
+        ]
+        capacities = [
+            CapacityRecord(
+                product="P1",
+                work_center="WC1",
+                annual_capacity_tons=1200.0,
+                utilization_target=1.0,
+                effective_from="2025-01-01",
+                effective_to="2025-01-31",
+            ),
+        ]
+
+        issues = validate(loads, capacities, [], mode="ModeA")
+        missing_details = [issue.detail for issue in issues if issue.check == "CapacityEffectiveMissing"]
+
+        self.assertEqual(len(missing_details), 1)
+        self.assertIn("planner.csv row 2", missing_details[0])
+        self.assertIn("Month='2025-02'", missing_details[0])
+
     def test_create_template_and_load_control_config(self):
         with workspace_tempdir() as tmpdir:
             project_root = os.path.join(tmpdir, "portable_root")

@@ -23,11 +23,13 @@ class PackagingTarget:
     metadata_packages: tuple[str, ...]
 
 
-_COMMON_RESOURCE_DIR_MAPPINGS = (
-    ("Data_Input", "resources/Data_Input"),
-)
+_COMMON_RESOURCE_DIR_MAPPINGS: tuple[tuple[str, str], ...] = ()
 
 _COMMON_RESOURCE_FILE_MAPPINGS = (
+    ("Data_Input/planner1_load.csv", "resources/Data_Input"),
+    ("Data_Input/master_capacity.csv", "resources/Data_Input"),
+    ("Data_Input/master_routing.csv", "resources/Data_Input"),
+    ("Data_Input/DATA_INPUT_GUIDE_CN.md", "resources/Data_Input"),
     ("README.md", "resources/docs"),
     ("LICENSE", "resources/docs"),
     ("docs/CUSTOMER_LICENSE_QUICKSTART_CN.md", "resources/docs"),

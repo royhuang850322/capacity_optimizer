@@ -7,6 +7,7 @@ load percentages are displayed in Excel analysis outputs.
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 
 import pandas as pd
@@ -18,15 +19,136 @@ from app.models import AllocationResult, CapacityRecord, LoadRecord, RoutingReco
 
 EPSILON = 1e-6
 
-RawCapacityMap = Dict[Tuple[str, str], float]
+RawCapacityMap = Dict[Tuple[str, ...], float]
 
 
-def build_raw_capacity_map(capacities: List[CapacityRecord]) -> RawCapacityMap:
-    return {
+def build_raw_capacity_map(capacities: List[CapacityRecord], months: List[str] | None = None) -> RawCapacityMap:
+    raw_capacity_map: RawCapacityMap = {
         (record.product, record.work_center): record.monthly_capacity_tons
         for record in capacities
         if record.monthly_capacity_tons > EPSILON
     }
+    for month in months or []:
+        for record in _select_effective_capacity_records(capacities, month):
+            if record.monthly_capacity_tons > EPSILON:
+                raw_capacity_map[(month, record.product, record.work_center)] = record.monthly_capacity_tons
+    return raw_capacity_map
+
+
+def _lookup_raw_capacity(
+    raw_capacity_map: RawCapacityMap,
+    product: str,
+    work_center: str,
+    month: str | None = None,
+) -> float:
+    if month:
+        monthly_value = raw_capacity_map.get((month, product, work_center), 0.0)
+        if monthly_value > EPSILON:
+            return monthly_value
+    return raw_capacity_map.get((product, work_center), 0.0)
+
+
+def _iter_product_capacity_candidates(
+    raw_capacity_map: RawCapacityMap,
+    product: str,
+    month: str | None = None,
+) -> List[Tuple[str, float]]:
+    candidates: Dict[str, float] = {}
+    for key, raw_capacity in raw_capacity_map.items():
+        if raw_capacity <= EPSILON:
+            continue
+        if len(key) == 3:
+            key_month, capacity_product, work_center = key
+            if month and key_month == month and capacity_product == product:
+                candidates[str(work_center)] = raw_capacity
+        elif len(key) == 2:
+            capacity_product, work_center = key
+            if capacity_product == product and str(work_center) not in candidates:
+                candidates[str(work_center)] = raw_capacity
+    return sorted(candidates.items())
+
+
+def _select_effective_capacity_records(
+    capacities: List[CapacityRecord],
+    month: str,
+) -> List[CapacityRecord]:
+    month_key = _month_to_index(month)
+    grouped: Dict[Tuple[str, str], List[CapacityRecord]] = defaultdict(list)
+    for record in capacities:
+        grouped[(record.product, record.work_center)].append(record)
+
+    selected: List[CapacityRecord] = []
+    for records in grouped.values():
+        concrete_matches = [
+            record
+            for record in records
+            if _capacity_window_covers(record, month_key)
+        ]
+        if concrete_matches:
+            selected.append(concrete_matches[0])
+            continue
+        default_matches = [record for record in records if _is_default_capacity_window(record)]
+        if default_matches:
+            selected.append(default_matches[0])
+    return selected
+
+
+def _capacity_window_covers(record: CapacityRecord, month_key: int) -> bool:
+    if _is_default_capacity_window(record):
+        return False
+    parsed = _capacity_window(record)
+    return parsed is not None and parsed[0] <= month_key <= parsed[1]
+
+
+def _is_default_capacity_window(record: CapacityRecord) -> bool:
+    start = _capacity_date_text(record.effective_from)
+    end = _capacity_date_text(record.effective_to)
+    if not start and not end:
+        return True
+    return start == "99999" and end == "99999"
+
+
+def _capacity_window(record: CapacityRecord) -> Tuple[int, int] | None:
+    start = _capacity_date_text(record.effective_from)
+    end = _capacity_date_text(record.effective_to)
+    if not start or not end or start == "99999" or end == "99999":
+        return None
+    try:
+        return _parse_capacity_month(start), _parse_capacity_month(end)
+    except ValueError:
+        return None
+
+
+def _parse_capacity_month(value: str) -> int:
+    text = _capacity_date_text(value)
+    if not text or text == "99999":
+        raise ValueError("invalid capacity month")
+    if text.isdigit() and len(text) > 4:
+        base = datetime(1899, 12, 30)
+        dt = base + timedelta(days=int(text))
+        return dt.year * 12 + dt.month
+    normalized = text.replace("/", "-").replace(".", "-")
+    for fmt in ("%Y-%m-%d", "%Y-%m", "%Y-%m-%d %H:%M:%S"):
+        try:
+            dt = datetime.strptime(normalized, fmt)
+            return dt.year * 12 + dt.month
+        except ValueError:
+            pass
+    dt = datetime.fromisoformat(normalized)
+    return dt.year * 12 + dt.month
+
+
+def _capacity_date_text(value) -> str:
+    text = str(value or "").strip()
+    if text.casefold() in {"", "nan", "none", "nat"}:
+        return ""
+    if text.endswith(".0") and text[:-2].isdigit():
+        return text[:-2]
+    return text
+
+
+def _month_to_index(month: str) -> int:
+    return int(str(month)[:4]) * 12 + int(str(month)[5:7])
 
 
 def compute_display_capacity_share_pct(
@@ -37,7 +159,7 @@ def compute_display_capacity_share_pct(
 ) -> float:
     if allocated_tons <= EPSILON:
         return 0.0
-    raw_capacity = raw_capacity_map.get((product, work_center), 0.0)
+    raw_capacity = _lookup_raw_capacity(raw_capacity_map, product, work_center)
     if raw_capacity <= EPSILON:
         raise ValueError(
             f"Missing raw capacity definition for product={product}, resource={work_center}."
@@ -54,8 +176,8 @@ def build_pressure_load_frame(
     months: List[str],
     unmet_capacities: List[CapacityRecord] | None = None,
 ) -> pd.DataFrame:
-    raw_capacity_map = build_raw_capacity_map(capacities)
-    unmet_capacity_map = build_raw_capacity_map(unmet_capacities or capacities)
+    raw_capacity_map = build_raw_capacity_map(capacities, months)
+    unmet_capacity_map = build_raw_capacity_map(unmet_capacities or capacities, months)
     month_wc_load = _build_internal_load_map(results, raw_capacity_map)
     unmet_by_month_product = _extract_unmet_by_month_product(results)
 
@@ -73,7 +195,7 @@ def build_pressure_load_frame(
         )
 
     for (month, product, work_center), tons in assigned_unmet_tons.items():
-        month_wc_load[(month, work_center)] += _tons_to_load_share(product, work_center, tons, raw_capacity_map)
+        month_wc_load[(month, work_center)] += _tons_to_load_share(product, work_center, tons, raw_capacity_map, month)
 
     workcenters = sorted({work_center for _month, work_center in month_wc_load})
     if not workcenters:
@@ -97,8 +219,9 @@ def build_dashboard_fact_frame(
     routings: List[RoutingRecord],
     unmet_capacities: List[CapacityRecord] | None = None,
 ) -> pd.DataFrame:
-    raw_capacity_map = build_raw_capacity_map(capacities)
-    unmet_capacity_map = build_raw_capacity_map(unmet_capacities or capacities)
+    months = sorted({str(result.month) for result in results} | {str(load.month) for load in loads})
+    raw_capacity_map = build_raw_capacity_map(capacities, months)
+    unmet_capacity_map = build_raw_capacity_map(unmet_capacities or capacities, months)
     internal_tons_by_key = _build_internal_tons_map(results)
     unmet_by_month_product = _extract_unmet_by_month_product(results)
     outsourced_by_month_product = _extract_outsourced_by_month_product(results)
@@ -191,8 +314,8 @@ def build_pressure_tons_frame(
     months: List[str],
     unmet_capacities: List[CapacityRecord] | None = None,
 ) -> pd.DataFrame:
-    raw_capacity_map = build_raw_capacity_map(capacities)
-    unmet_capacity_map = build_raw_capacity_map(unmet_capacities or capacities)
+    raw_capacity_map = build_raw_capacity_map(capacities, months)
+    unmet_capacity_map = build_raw_capacity_map(unmet_capacities or capacities, months)
     month_wc_tons = _build_internal_workcenter_tons_map(results)
     unmet_by_month_product = _extract_unmet_by_month_product(results)
 
@@ -258,12 +381,13 @@ def build_unmet_attribution_detail_frame(
             unmet_by_month_product=unmet_by_month_product,
         )
     else:
+        months = sorted({str(result.month) for result in results} | {str(load.month) for load in loads})
         rows = _build_mode_b_unmet_assignment_rows(
             results=results,
             loads=loads,
             unmet_by_month_product=unmet_by_month_product,
-            candidate_capacity_map=build_raw_capacity_map(unmet_capacities or capacities),
-            display_capacity_map=build_raw_capacity_map(capacities),
+            candidate_capacity_map=build_raw_capacity_map(unmet_capacities or capacities, months),
+            display_capacity_map=build_raw_capacity_map(capacities, months),
         )
 
     if not rows:
@@ -337,7 +461,7 @@ def _build_internal_load_map(
 ) -> Dict[Tuple[str, str], float]:
     month_wc_load: Dict[Tuple[str, str], float] = defaultdict(float)
     for (month, product, work_center), tons in _build_internal_tons_map(results).items():
-        raw_capacity = raw_capacity_map.get((product, work_center), 0.0)
+        raw_capacity = _lookup_raw_capacity(raw_capacity_map, product, work_center, month)
         if raw_capacity <= EPSILON:
             continue
         month_wc_load[(month, work_center)] += tons / raw_capacity
@@ -652,7 +776,7 @@ def _build_mode_b_unmet_assignment_rows(
                 "reference_demand_tons": 0.0,
             },
         )
-        if candidate_capacity_map.get((product, source_resource), 0.0) <= EPSILON:
+        if _lookup_raw_capacity(candidate_capacity_map, product, source_resource, month) <= EPSILON:
             raise ValueError(
                 f"ModeB unmet assignment could not find baseline capacity resource for "
                 f"product={product}, month={month}, plant={plant}, resource={source_resource}."
@@ -718,8 +842,7 @@ def _solve_mode_b_capacity_only_unmet(
     for product in product_unmet:
         candidates = sorted(
             work_center
-            for (capacity_product, work_center), raw_capacity in candidate_capacity_map.items()
-            if capacity_product == product and raw_capacity > EPSILON
+            for work_center, _raw_capacity in _iter_product_capacity_candidates(candidate_capacity_map, product, month)
         )
         if not candidates:
             raise ValueError(
@@ -749,9 +872,9 @@ def _solve_mode_b_capacity_only_unmet(
         for product, candidates in candidates_by_product.items():
             if work_center not in candidates:
                 continue
-            raw_capacity = display_capacity_map.get((product, work_center), 0.0)
+            raw_capacity = _lookup_raw_capacity(display_capacity_map, product, work_center, month)
             if raw_capacity <= EPSILON:
-                raw_capacity = candidate_capacity_map[(product, work_center)]
+                raw_capacity = _lookup_raw_capacity(candidate_capacity_map, product, work_center, month)
             constraint.SetCoefficient(assignment_vars[(product, work_center)], 1.0 / raw_capacity)
 
     objective = solver.Objective()
@@ -777,8 +900,9 @@ def _tons_to_load_share(
     work_center: str,
     tons: float,
     raw_capacity_map: RawCapacityMap,
+    month: str | None = None,
 ) -> float:
-    raw_capacity = raw_capacity_map.get((product, work_center), 0.0)
+    raw_capacity = _lookup_raw_capacity(raw_capacity_map, product, work_center, month)
     if raw_capacity <= EPSILON:
         raise ValueError(
             f"Missing capacity definition for product={product}, resource={work_center}."

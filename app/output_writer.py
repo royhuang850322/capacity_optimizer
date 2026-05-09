@@ -558,12 +558,11 @@ def _results_to_df(
                 "Allocated_Tons": result.allocated_tons,
                 "Outsourced_Tons": result.outsourced_tons,
                 "Unmet_Tons": result.unmet_tons,
-                "CapacityShare_Pct": compute_display_capacity_share_pct(
-                    product=result.product,
-                    work_center=result.work_center,
-                    allocated_tons=result.allocated_tons,
-                    raw_capacity_map=raw_capacity_map,
-                ) / 100.0,
+                "CapacityShare_Pct": (
+                    round(float(result.capacity_share_pct or 0.0) / 100.0, 6)
+                    if result.allocation_type == "Internal"
+                    else 0.0
+                ),
                 "Allocation_Source": result.allocation_source,
                 "Residual_After_Capacity_Tons": result.residual_after_capacity_tons,
                 "Residual_After_Routing_Tons": result.residual_after_routing_tons,

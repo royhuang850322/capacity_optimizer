@@ -755,7 +755,7 @@ def _total_outsourced(results) -> float:
 
 def _selected_scenario(configured_scenario: str | None) -> str | None:
     scenario = str(configured_scenario or "").strip()
-    if not scenario or scenario.lower() in {"base", "base scenario"}:
+    if not scenario or scenario.lower() in {"all", "base", "base scenario"}:
         return None
     return scenario
 

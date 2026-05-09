@@ -1,4 +1,4 @@
-﻿Product,Product Family,Resource,Max Capacity Ton,Planner Capacity Ton,EligibleFalg,Router Type
+﻿Product,Product Family,Resource,Max Capacity Ton,Planned Capacity Ton,EligibleFalg,Router Type
 AUF-01,AURORA FLEX,North Reactor A-1200L Batch Cell,722.9,702.25,Y,Primary
 AUF-01,AURORA FLEX,Partner Cell J-External,1135.99,1084.36,Y,Toller
 AUF-02,AURORA FLEX,North Reactor A-1200L,4813.57,4495.0,Y,Primary

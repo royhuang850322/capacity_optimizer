@@ -71,7 +71,7 @@ def load_config(template_path: str) -> Config:
             default=os.path.join(project_root_folder, "output"),
         ),
         output_file_name=_get("Output_FileName", "capacity_optimizer_result.xlsx"),
-        scenario_name=_get("Scenario_Name", "Base"),
+        scenario_name=_get("Scenario_Name", "All"),
         start_month=start_month,
         horizon_months=int(float(_get("Horizon_Months", 60))),
         run_timestamp=_get("Run_Timestamp"),
@@ -239,6 +239,7 @@ def load_direct_mode_a_with_capacity_bases(
     cap_path = _find_master_file(master_folder, "master_capacity")
     cap_df = _read_tabular(cap_path)
     cap_df.columns = [str(c).strip() for c in cap_df.columns]
+    cap_df.attrs["source_file"] = os.path.basename(cap_path)
     return loads, _load_capacity_bases_from_master_capacity_df(cap_df, legacy_caps), []
 
 
@@ -274,6 +275,7 @@ def load_direct_mode_b_with_capacity_bases(
     cap_path = _find_master_file(master_folder, "master_capacity")
     cap_df = _read_tabular(cap_path)
     cap_df.columns = [str(c).strip() for c in cap_df.columns]
+    cap_df.attrs["source_file"] = os.path.basename(cap_path)
     baseline_capacities_by_basis = _load_capacity_bases_from_master_capacity_df(cap_df, legacy_caps)
     routing_capacity_bases = _load_capacity_bases_from_routing(master_folder)
     merged_capacity_bases = {
@@ -354,9 +356,10 @@ def load_direct(
     print(f"  [READ] {os.path.basename(cap_path)}  (capacity master)")
     cap_df = _read_tabular(cap_path)
     cap_df.columns = [str(c).strip() for c in cap_df.columns]
+    cap_df.attrs["source_file"] = os.path.basename(cap_path)
 
     loads = _apply_scenario_filter(_aggregate_load_records(all_load_records), selected_scenario)
-    caps  = _parse_capacity_df(cap_df)
+    caps  = _parse_capacity_df(cap_df, source_file=os.path.basename(cap_path))
 
     # Routing is optional (None = skip)
     if routing_filename is None:
@@ -581,6 +584,9 @@ def _apply_scenario_filter(
     records: List[LoadRecord],
     selected_scenario: str | None,
 ) -> List[LoadRecord]:
+    if _is_all_scenario(selected_scenario):
+        return records
+
     scenario_key = _scenario_key(selected_scenario)
     if not scenario_key:
         return records
@@ -596,6 +602,11 @@ def _apply_scenario_filter(
     if not filtered:
         raise ValueError(f"No planner rows found for scenario '{selected_scenario}'.")
     return filtered
+
+
+def _is_all_scenario(value: str | None) -> bool:
+    text = str(value or "").strip().casefold()
+    return not text or text in {"all", "base", "baseline", "base scenario"}
 
 
 def _normalize_capacity_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -627,6 +638,13 @@ def _normalize_capacity_columns(df: pd.DataFrame) -> pd.DataFrame:
         "line":                  "WorkCenter",
         "product family":        "ProductFamily",
         "product_family":        "ProductFamily",
+        "from":                  "Effective_From",
+        "effectivefrom":         "Effective_From",
+        "effective_from":        "Effective_From",
+        "to":                    "Effective_To",
+        "effectiveto":           "Effective_To",
+        "effective_to":          "Effective_To",
+        "comment":               "Comment",
     }
     new_cols = {col: rename_map[col.strip().lower()]
                 for col in df.columns if col.strip().lower() in rename_map}
@@ -676,31 +694,46 @@ _ROUTETYPE_PRIORITY = {
 }
 
 
-def _parse_capacity_df(df: pd.DataFrame) -> List[CapacityRecord]:
-    return _parse_capacity_df_for_column(df, "Annual_Capacity_Tons")
+def _parse_capacity_df(df: pd.DataFrame, source_file: str = "") -> List[CapacityRecord]:
+    return _parse_capacity_df_for_column(df, "Annual_Capacity_Tons", source_file=source_file)
 
 
 def _parse_capacity_df_for_column(
     df: pd.DataFrame,
     capacity_column: str,
+    source_file: str = "",
 ) -> List[CapacityRecord]:
     df = _normalize_capacity_columns(df)
     if capacity_column not in df.columns:
         return []
     records = []
-    for _, row in df.iterrows():
+    for df_idx, row in df.iterrows():
+        row_num = int(df_idx) + 2
         try:
             records.append(CapacityRecord(
                 product=str(row.get("Product", "")).strip(),
                 work_center=str(row.get("WorkCenter", "")).strip(),
                 annual_capacity_tons=float(row.get(capacity_column, 0) or 0),
                 utilization_target=1.0,
-                effective_from=str(row.get("Effective_From", "") or "").strip() or None,
-                effective_to=str(row.get("Effective_To", "") or "").strip() or None,
+                effective_from=_clean_capacity_date_value(row.get("Effective_From", "")) or None,
+                effective_to=_clean_capacity_date_value(row.get("Effective_To", "")) or None,
+                source_file=source_file,
+                row_num=row_num,
             ))
         except Exception as e:
             print(f"  [WARN] Skipping capacity row due to: {e}  →  {dict(row)}")
     return records
+
+
+def _clean_capacity_date_value(value) -> str:
+    if pd.isna(value):
+        return ""
+    text = str(value or "").strip()
+    if text.casefold() in {"", "nan", "none", "nat"}:
+        return ""
+    if text.endswith(".0") and text[:-2].isdigit():
+        return text[:-2]
+    return text
 
 
 def _parse_capacity_records_from_routing_df(
@@ -744,9 +777,22 @@ def _load_capacity_bases_from_master_capacity_df(
     legacy_capacities: List[CapacityRecord],
 ) -> dict[str, List[CapacityRecord]]:
     legacy_fallback = list(legacy_capacities)
-    max_capacities = _parse_capacity_df_for_column(cap_df, "Annual_Max_Capacity_Tons")
-    planned_capacities = _parse_capacity_df_for_column(cap_df, "Annual_Planned_Capacity_Tons")
-    legacy_from_df = _parse_capacity_df_for_column(cap_df, "Annual_Capacity_Tons")
+    source_file = str(cap_df.attrs.get("source_file", ""))
+    max_capacities = _parse_capacity_df_for_column(
+        cap_df,
+        "Annual_Max_Capacity_Tons",
+        source_file=source_file,
+    )
+    planned_capacities = _parse_capacity_df_for_column(
+        cap_df,
+        "Annual_Planned_Capacity_Tons",
+        source_file=source_file,
+    )
+    legacy_from_df = _parse_capacity_df_for_column(
+        cap_df,
+        "Annual_Capacity_Tons",
+        source_file=source_file,
+    )
 
     if not legacy_fallback:
         legacy_fallback = legacy_from_df
@@ -796,11 +842,23 @@ def _merge_capacity_records(
     comparison_capacities: List[CapacityRecord],
 ) -> List[CapacityRecord]:
     merged = {
-        (record.product, record.work_center): record
+        (
+            record.product,
+            record.work_center,
+            str(record.effective_from or "").strip(),
+            str(record.effective_to or "").strip(),
+        ): record
         for record in baseline_capacities
     }
     for record in comparison_capacities:
-        merged[(record.product, record.work_center)] = record
+        merged[
+            (
+                record.product,
+                record.work_center,
+                str(record.effective_from or "").strip(),
+                str(record.effective_to or "").strip(),
+            )
+        ] = record
     return list(merged.values())
 
 

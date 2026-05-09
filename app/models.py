@@ -60,6 +60,8 @@ class CapacityRecord:
     utilization_target: float   # compatibility field; capacity calculations now always use 100%
     effective_from: Optional[str] = None
     effective_to: Optional[str] = None
+    source_file: Optional[str] = None
+    row_num: Optional[int] = None
 
     @property
     def monthly_capacity_tons(self) -> float:
