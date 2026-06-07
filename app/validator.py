@@ -18,6 +18,9 @@ from typing import Dict, List, Set, Tuple
 from app.models import CapacityRecord, LoadRecord, RoutingRecord, ValidationIssue
 
 
+NUMERIC_COMPARE_TOLERANCE = 0.0001
+
+
 def validate(
     loads: List[LoadRecord],
     capacities: List[CapacityRecord],
@@ -49,6 +52,8 @@ def validate(
         require_routing=require_routing,
         routing_capacities=routing_capacities,
     ))
+    if require_routing and routing_capacities:
+        issues.extend(_check_capacity_routing_consistency(capacities, routing_capacities))
     return issues
 
 
@@ -140,6 +145,18 @@ def _check_capacity_records(capacities: List[CapacityRecord]) -> List[Validation
                 severity="ERROR",
                 check="CapacityZero",
                 detail=f"Annual_Capacity_Tons <= 0 for {record.product} / {record.work_center}.",
+            ))
+        if record.setup_hours is None:
+            issues.append(ValidationIssue(
+                severity="ERROR",
+                check="SetupHoursRequired",
+                detail=f"{_capacity_row_ref(record)} Missing or non-numeric Setup_Hours for {record.product} / {record.work_center}.",
+            ))
+        elif record.setup_hours < 0:
+            issues.append(ValidationIssue(
+                severity="ERROR",
+                check="SetupHoursNegative",
+                detail=f"{_capacity_row_ref(record)} Setup_Hours < 0 for {record.product} / {record.work_center}.",
             ))
 
     for (product, work_center), records in sorted(grouped.items()):
@@ -251,8 +268,105 @@ def _check_routing_records(routings: List[RoutingRecord]) -> List[ValidationIssu
                     f"product={record.product or record.product_family}."
                 ),
             ))
+        if record.product and record.work_center:
+            if record.max_capacity_tons is None:
+                issues.append(ValidationIssue(
+                    severity="ERROR",
+                    check="RoutingMaxCapacityRequired",
+                    detail=f"{_routing_row_ref(record)} Missing or non-numeric Max_Capacity_Tons for {record.product} / {record.work_center}.",
+                ))
+            elif record.max_capacity_tons <= 0:
+                issues.append(ValidationIssue(
+                    severity="ERROR",
+                    check="RoutingMaxCapacityZero",
+                    detail=f"{_routing_row_ref(record)} Max_Capacity_Tons <= 0 for {record.product} / {record.work_center}.",
+                ))
+            if record.planned_capacity_tons is None:
+                issues.append(ValidationIssue(
+                    severity="ERROR",
+                    check="RoutingPlannedCapacityRequired",
+                    detail=f"{_routing_row_ref(record)} Missing or non-numeric Planned_Capacity_Tons for {record.product} / {record.work_center}.",
+                ))
+            elif record.planned_capacity_tons <= 0:
+                issues.append(ValidationIssue(
+                    severity="ERROR",
+                    check="RoutingPlannedCapacityZero",
+                    detail=f"{_routing_row_ref(record)} Planned_Capacity_Tons <= 0 for {record.product} / {record.work_center}.",
+                ))
+            if record.setup_hours is None:
+                issues.append(ValidationIssue(
+                    severity="ERROR",
+                    check="RoutingSetupHoursRequired",
+                    detail=f"{_routing_row_ref(record)} Missing or non-numeric Setup_Hours for {record.product} / {record.work_center}.",
+                ))
+            elif record.setup_hours < 0:
+                issues.append(ValidationIssue(
+                    severity="ERROR",
+                    check="RoutingSetupHoursNegative",
+                    detail=f"{_routing_row_ref(record)} Setup_Hours < 0 for {record.product} / {record.work_center}.",
+                ))
 
     return issues
+
+
+def _check_capacity_routing_consistency(
+    baseline_capacities: List[CapacityRecord],
+    routing_capacities: List[CapacityRecord],
+) -> List[ValidationIssue]:
+    issues: List[ValidationIssue] = []
+    baseline_by_key: Dict[Tuple[str, str], List[CapacityRecord]] = defaultdict(list)
+    routing_by_key: Dict[Tuple[str, str], List[CapacityRecord]] = defaultdict(list)
+
+    for record in baseline_capacities:
+        baseline_by_key[(record.product, record.work_center)].append(record)
+    for record in routing_capacities:
+        if _is_routing_capacity_record(record):
+            routing_by_key[(record.product, record.work_center)].append(record)
+
+    for key in sorted(set(baseline_by_key) & set(routing_by_key)):
+        baseline = baseline_by_key[key][0]
+        routing = routing_by_key[key][0]
+        if not _numbers_close(baseline.annual_capacity_tons, routing.annual_capacity_tons):
+            issues.append(ValidationIssue(
+                severity="ERROR",
+                check="CapacityRoutingCapacityMismatch",
+                detail=(
+                    f"Product='{key[0]}' / Resource='{key[1]}' capacity differs between "
+                    f"{_capacity_row_ref(baseline)} ({baseline.annual_capacity_tons}) and "
+                    f"{_capacity_row_ref(routing)} ({routing.annual_capacity_tons}). "
+                    f"Tolerance={NUMERIC_COMPARE_TOLERANCE}."
+                ),
+            ))
+        if baseline.setup_hours is not None and routing.setup_hours is not None:
+            if not _numbers_close(baseline.setup_hours, routing.setup_hours):
+                issues.append(ValidationIssue(
+                    severity="ERROR",
+                    check="CapacityRoutingSetupMismatch",
+                    detail=(
+                        f"Product='{key[0]}' / Resource='{key[1]}' Setup_Hours differs between "
+                        f"{_capacity_row_ref(baseline)} ({baseline.setup_hours}) and "
+                        f"{_capacity_row_ref(routing)} ({routing.setup_hours}). "
+                        f"Tolerance={NUMERIC_COMPARE_TOLERANCE}."
+                    ),
+                ))
+    return issues
+
+
+def _numbers_close(left: float, right: float) -> bool:
+    return abs(float(left or 0.0) - float(right or 0.0)) <= NUMERIC_COMPARE_TOLERANCE
+
+
+def _is_routing_capacity_record(record: CapacityRecord) -> bool:
+    return "routing" in str(record.source_file or "").casefold()
+
+
+def _routing_row_ref(record: RoutingRecord) -> str:
+    parts = []
+    if record.source_file:
+        parts.append(record.source_file)
+    if record.row_num is not None:
+        parts.append(f"row {record.row_num}")
+    return f"[{' '.join(parts)}]" if parts else "[unknown row]"
 
 
 def _check_cross_coverage(

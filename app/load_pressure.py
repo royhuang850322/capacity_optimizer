@@ -18,8 +18,13 @@ from app.models import AllocationResult, CapacityRecord, LoadRecord, RoutingReco
 
 
 EPSILON = 1e-6
+REPORT_DATA_DECIMALS = 10
 
 RawCapacityMap = Dict[Tuple[str, ...], float]
+
+
+def _report_number(value: float) -> float:
+    return round(float(value or 0.0), REPORT_DATA_DECIMALS)
 
 
 def build_raw_capacity_map(capacities: List[CapacityRecord], months: List[str] | None = None) -> RawCapacityMap:
@@ -164,7 +169,7 @@ def compute_display_capacity_share_pct(
         raise ValueError(
             f"Missing raw capacity definition for product={product}, resource={work_center}."
         )
-    return round(100.0 * allocated_tons / raw_capacity, 4)
+    return _report_number(100.0 * allocated_tons / raw_capacity)
 
 
 def build_pressure_load_frame(
@@ -248,16 +253,28 @@ def build_dashboard_fact_frame(
         lambda: {
             "Demand_Tons": 0.0,
             "Internal_Tons": 0.0,
+            "Setup_Equivalent_Tons_By_Max": 0.0,
+            "Capacity_Used_Tons": 0.0,
             "Outsourced_Tons": 0.0,
             "Unmet_Tons": 0.0,
             "Supplied_Tons": 0.0,
         }
     )
 
-    for (month, _product, work_center), tons in internal_tons_by_key.items():
-        year = _month_to_year(month)
+    for result in results:
+        if result.allocation_type != "Internal":
+            continue
+        year = _month_to_year(result.month)
+        work_center = result.work_center
+        tons = float(result.allocated_tons or 0.0)
         fact_by_workcenter_year[(year, work_center)]["Demand_Tons"] += tons
         fact_by_workcenter_year[(year, work_center)]["Internal_Tons"] += tons
+        fact_by_workcenter_year[(year, work_center)]["Setup_Equivalent_Tons_By_Max"] += float(
+            result.setup_equivalent_tons_by_max or 0.0
+        )
+        fact_by_workcenter_year[(year, work_center)]["Capacity_Used_Tons"] += float(
+            result.capacity_used_tons or result.allocated_tons or 0.0
+        )
         fact_by_workcenter_year[(year, work_center)]["Supplied_Tons"] += tons
 
     for (month, _product, work_center), tons in assigned_outsourced_tons.items():
@@ -282,11 +299,13 @@ def build_dashboard_fact_frame(
                 "Mode": mode,
                 "Year": year,
                 "WorkCenter": work_center,
-                "Demand_Tons": round(payload["Demand_Tons"], 4),
-                "Internal_Tons": round(payload["Internal_Tons"], 4),
-                "Outsourced_Tons": round(payload["Outsourced_Tons"], 4),
-                "Unmet_Tons": round(payload["Unmet_Tons"], 4),
-                "Supplied_Tons": round(payload["Supplied_Tons"], 4),
+                "Demand_Tons": _report_number(payload["Demand_Tons"]),
+                "Internal_Tons": _report_number(payload["Internal_Tons"]),
+                "Setup_Equivalent_Tons_By_Max": _report_number(payload["Setup_Equivalent_Tons_By_Max"]),
+                "Capacity_Used_Tons": _report_number(payload["Capacity_Used_Tons"]),
+                "Outsourced_Tons": _report_number(payload["Outsourced_Tons"]),
+                "Unmet_Tons": _report_number(payload["Unmet_Tons"]),
+                "Supplied_Tons": _report_number(payload["Supplied_Tons"]),
             }
         )
 
@@ -298,6 +317,8 @@ def build_dashboard_fact_frame(
             "WorkCenter",
             "Demand_Tons",
             "Internal_Tons",
+            "Setup_Equivalent_Tons_By_Max",
+            "Capacity_Used_Tons",
             "Outsourced_Tons",
             "Unmet_Tons",
             "Supplied_Tons",
@@ -343,7 +364,7 @@ def build_pressure_tons_frame(
     for work_center in workcenters:
         row = {"WorkCenter": work_center}
         for month in months:
-            row[month] = round(month_wc_tons.get((month, work_center), 0.0), 4)
+            row[month] = _report_number(month_wc_tons.get((month, work_center), 0.0))
         rows.append(row)
     return pd.DataFrame(rows, columns=["WorkCenter", *months])
 
@@ -395,7 +416,11 @@ def build_unmet_attribution_detail_frame(
 
     detail_df = pd.DataFrame(rows, columns=columns)
     for numeric_col in ("Reference_Demand_Tons", "Product_Unmet_Tons", "Attributed_Unmet_Tons"):
-        detail_df[numeric_col] = pd.to_numeric(detail_df[numeric_col], errors="coerce").fillna(0.0).round(4)
+        detail_df[numeric_col] = (
+            pd.to_numeric(detail_df[numeric_col], errors="coerce")
+            .fillna(0.0)
+            .round(REPORT_DATA_DECIMALS)
+        )
     detail_df = detail_df.sort_values(
         ["Month", "Product", "Plant", "Source_Resource", "PlannerName", "Attributed_WorkCenter"],
         key=lambda col: col.map(lambda value: str(value).casefold()),
@@ -573,9 +598,9 @@ def _summarize_heatmap_months_to_years(
             year_months = [month for month in months if _month_to_year(month) == year]
             values = [float(record[month]) for month in year_months if month in monthly_frame.columns]
             if record["Metric"] == "Demand":
-                row[year] = round(sum(values), 4)
+                row[year] = _report_number(sum(values))
             else:
-                row[year] = round(sum(values) / len(values), 6) if values else 0.0
+                row[year] = _report_number(sum(values) / len(values)) if values else 0.0
         rows.append(row)
     return pd.DataFrame(rows, columns=["WorkCenter", "Metric", *years])
 

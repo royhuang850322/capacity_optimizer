@@ -62,6 +62,8 @@ class CapacityRecord:
     effective_to: Optional[str] = None
     source_file: Optional[str] = None
     row_num: Optional[int] = None
+    setup_hours: Optional[float] = None
+    setup_reference_annual_capacity_tons: Optional[float] = None
 
     @property
     def monthly_capacity_tons(self) -> float:
@@ -70,6 +72,13 @@ class CapacityRecord:
     @property
     def effective_monthly_capacity_tons(self) -> float:
         return self.monthly_capacity_tons
+
+    @property
+    def setup_reference_monthly_capacity_tons(self) -> float:
+        reference = self.setup_reference_annual_capacity_tons
+        if reference is None:
+            reference = self.annual_capacity_tons
+        return float(reference or 0.0) / 12.0
 
 
 @dataclass
@@ -85,6 +94,11 @@ class RoutingRecord:
     product: Optional[str] = None
     product_family: Optional[str] = None
     penalty_weight: float = 1.0  # override; if 0 uses auto-derived from priority
+    setup_hours: Optional[float] = None
+    max_capacity_tons: Optional[float] = None
+    planned_capacity_tons: Optional[float] = None
+    source_file: Optional[str] = None
+    row_num: Optional[int] = None
 
 
 @dataclass
@@ -108,6 +122,10 @@ class AllocationResult:
     allocation_source: str = ""
     residual_after_capacity_tons: float = 0.0
     residual_after_routing_tons: float = 0.0
+    setup_applied: bool = False
+    setup_hours: float = 0.0
+    setup_equivalent_tons_by_max: float = 0.0
+    capacity_used_tons: float = 0.0
 
 
 @dataclass

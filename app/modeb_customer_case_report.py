@@ -6,6 +6,7 @@ import csv
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
+from numbers import Real
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -24,6 +25,7 @@ from app.runtime_paths import RuntimePaths, resolve_runtime_paths, with_workspac
 
 DEFAULT_OUTPUT_NAME = "product_analysis.xlsx"
 DEFAULT_MAX_PRODUCTS = 10
+REPORT_DATA_DECIMALS = 10
 SUPPORTED_REPORT_MODES = ("ModeA", "ModeB")
 
 THIN = Side(style="thin", color="D9D9D9")
@@ -33,6 +35,14 @@ NOTE_FILL = PatternFill("solid", fgColor="FFF2CC")
 WHITE_FONT = Font(color="FFFFFF", bold=True)
 TITLE_FONT = Font(size=15, bold=True, color="1F1F1F")
 SECTION_FONT = Font(size=11, bold=True, color="1F1F1F")
+
+
+def _round_report_numeric(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, Real):
+        return round(float(value), REPORT_DATA_DECIMALS)
+    return value
 
 SUMMARY_HEADERS = {
     "Product": "产品",
@@ -974,12 +984,13 @@ def _write_table(
         for col_index, header in enumerate(headers, start=1):
             cell = ws.cell(start_row + row_offset, col_index)
             value = row_data.get(header)
-            cell.value = value
+            stored_value = _round_report_numeric(value)
+            cell.value = stored_value
             cell.alignment = Alignment(vertical="top", wrap_text=True)
             cell.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-            if header in ton_columns and isinstance(value, (int, float)):
+            if header in ton_columns and isinstance(stored_value, (int, float)):
                 cell.number_format = '#,##0.0'
-            elif header in pct_columns and isinstance(value, (int, float)):
+            elif header in pct_columns and isinstance(stored_value, (int, float)):
                 cell.number_format = '0.0'
 
     end_row = start_row + len(rows)

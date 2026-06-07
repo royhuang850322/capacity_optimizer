@@ -141,6 +141,7 @@ class SmokeM8Tests(unittest.TestCase):
                     "WorkCenter": "WC1",
                     "Annual_Capacity_Tons": 120.0,
                     "Utilization_Target": 1.0,
+                    "Setup_Hours": 0.0,
                 }
             ]
         ).to_csv(os.path.join(data_dir, "master_capacity.csv"), index=False)

@@ -390,6 +390,7 @@ def load_direct(
     print(f"  [READ] {os.path.basename(rout_path)}  (routing master)")
     rout_df = _read_tabular(rout_path)
     rout_df.columns = [str(c).strip() for c in rout_df.columns]
+    rout_df.attrs["source_file"] = os.path.basename(rout_path)
     routings = _parse_routing_df(rout_df)
     return loads, caps, routings
 
@@ -645,6 +646,15 @@ def _normalize_capacity_columns(df: pd.DataFrame) -> pd.DataFrame:
         "effectiveto":           "Effective_To",
         "effective_to":          "Effective_To",
         "comment":               "Comment",
+        "setup hours":           "Setup_Hours",
+        "setup hour":            "Setup_Hours",
+        "setup_hours":           "Setup_Hours",
+        "setuphours":            "Setup_Hours",
+        "setup time":            "Setup_Hours",
+        "setup_time":            "Setup_Hours",
+        "setuptime":             "Setup_Hours",
+        "changeover hours":      "Setup_Hours",
+        "changeoverhours":       "Setup_Hours",
     }
     new_cols = {col: rename_map[col.strip().lower()]
                 for col in df.columns if col.strip().lower() in rename_map}
@@ -680,6 +690,15 @@ def _normalize_routing_columns(df: pd.DataFrame) -> pd.DataFrame:
         "planner capacity tons": "Planned_Capacity_Tons",
         "planned capacity ton":  "Planned_Capacity_Tons",
         "planned capacity tons": "Planned_Capacity_Tons",
+        "setup hours":           "Setup_Hours",
+        "setup hour":            "Setup_Hours",
+        "setup_hours":           "Setup_Hours",
+        "setuphours":            "Setup_Hours",
+        "setup time":            "Setup_Hours",
+        "setup_time":            "Setup_Hours",
+        "setuptime":             "Setup_Hours",
+        "changeover hours":      "Setup_Hours",
+        "changeoverhours":       "Setup_Hours",
     }
     new_cols = {col: rename_map[col.strip().lower()]
                 for col in df.columns if col.strip().lower() in rename_map}
@@ -710,19 +729,33 @@ def _parse_capacity_df_for_column(
     for df_idx, row in df.iterrows():
         row_num = int(df_idx) + 2
         try:
+            annual_capacity_tons = float(row.get(capacity_column, 0) or 0)
             records.append(CapacityRecord(
                 product=str(row.get("Product", "")).strip(),
                 work_center=str(row.get("WorkCenter", "")).strip(),
-                annual_capacity_tons=float(row.get(capacity_column, 0) or 0),
+                annual_capacity_tons=annual_capacity_tons,
                 utilization_target=1.0,
                 effective_from=_clean_capacity_date_value(row.get("Effective_From", "")) or None,
                 effective_to=_clean_capacity_date_value(row.get("Effective_To", "")) or None,
                 source_file=source_file,
                 row_num=row_num,
+                setup_hours=_parse_optional_float(row.get("Setup_Hours", None)),
             ))
         except Exception as e:
             print(f"  [WARN] Skipping capacity row due to: {e}  →  {dict(row)}")
     return records
+
+
+def _parse_optional_float(value) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip()
+    if not text or text.casefold() in {"nan", "none"}:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _clean_capacity_date_value(value) -> str:
@@ -745,7 +778,9 @@ def _parse_capacity_records_from_routing_df(
         return []
 
     records: List[CapacityRecord] = []
-    for _, row in routing_df.iterrows():
+    source_file = str(routing_df.attrs.get("source_file", "master_routing"))
+    for df_idx, row in routing_df.iterrows():
+        row_num = int(df_idx) + 2
         product = str(row.get("Product", "") or "").strip()
         work_center = str(row.get("WorkCenter", "") or "").strip()
         if not product or not work_center:
@@ -766,6 +801,9 @@ def _parse_capacity_records_from_routing_df(
                 work_center=work_center,
                 annual_capacity_tons=annual_capacity_tons,
                 utilization_target=1.0,
+                source_file=source_file,
+                row_num=row_num,
+                setup_hours=_parse_optional_float(row.get("Setup_Hours", None)),
             )
         )
 
@@ -800,6 +838,7 @@ def _load_capacity_bases_from_master_capacity_df(
         max_capacities = list(legacy_fallback)
     if not planned_capacities:
         planned_capacities = list(legacy_fallback or max_capacities)
+    _apply_setup_reference_capacity(max_capacities, planned_capacities)
 
     return {
         MAX_BASIS: max_capacities,
@@ -814,6 +853,7 @@ def _load_capacity_bases_from_routing(
         routing_capacity_path = _find_master_file(master_folder, "master_routing")
         routing_capacity_df = _read_tabular(routing_capacity_path)
         routing_capacity_df.columns = [str(c).strip() for c in routing_capacity_df.columns]
+        routing_capacity_df.attrs["source_file"] = os.path.basename(routing_capacity_path)
         max_capacities = _parse_capacity_records_from_routing_df(
             routing_capacity_df,
             "Max_Capacity_Tons",
@@ -830,6 +870,7 @@ def _load_capacity_bases_from_routing(
         max_capacities = []
     if not planned_capacities:
         planned_capacities = list(max_capacities)
+    _apply_setup_reference_capacity(max_capacities, planned_capacities)
 
     return {
         MAX_BASIS: max_capacities,
@@ -862,11 +903,44 @@ def _merge_capacity_records(
     return list(merged.values())
 
 
+def _apply_setup_reference_capacity(
+    max_capacities: List[CapacityRecord],
+    target_capacities: List[CapacityRecord],
+) -> None:
+    max_by_exact_key = {
+        (
+            record.product,
+            record.work_center,
+            str(record.effective_from or "").strip(),
+            str(record.effective_to or "").strip(),
+        ): record.annual_capacity_tons
+        for record in max_capacities
+    }
+    max_by_product_wc = {
+        (record.product, record.work_center): record.annual_capacity_tons
+        for record in max_capacities
+    }
+    for record in target_capacities:
+        exact_key = (
+            record.product,
+            record.work_center,
+            str(record.effective_from or "").strip(),
+            str(record.effective_to or "").strip(),
+        )
+        reference = max_by_exact_key.get(exact_key)
+        if reference is None:
+            reference = max_by_product_wc.get((record.product, record.work_center))
+        if reference is not None:
+            record.setup_reference_annual_capacity_tons = reference
+
+
 def _parse_routing_df(df: pd.DataFrame) -> List[RoutingRecord]:
     df = _normalize_routing_columns(df)
     has_priority_col = "Priority" in df.columns
+    source_file = str(df.attrs.get("source_file", "master_routing"))
     records = []
-    for _, row in df.iterrows():
+    for df_idx, row in df.iterrows():
+        row_num = int(df_idx) + 2
         try:
             route_type = str(row.get("RouteType", "Alternative") or "Alternative").strip()
 
@@ -903,6 +977,11 @@ def _parse_routing_df(df: pd.DataFrame) -> List[RoutingRecord]:
                 eligible_flag=eligible,
                 route_type=route_type,
                 penalty_weight=pw,
+                setup_hours=_parse_optional_float(row.get("Setup_Hours", None)),
+                max_capacity_tons=_parse_optional_float(row.get("Max_Capacity_Tons", None)),
+                planned_capacity_tons=_parse_optional_float(row.get("Planned_Capacity_Tons", None)),
+                source_file=source_file,
+                row_num=row_num,
             ))
         except Exception as e:
             print(f"  [WARN] Skipping routing row due to: {e}  →  {dict(row)}")

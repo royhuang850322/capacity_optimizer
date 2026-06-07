@@ -13,6 +13,7 @@ ModeB:
 """
 from __future__ import annotations
 
+import calendar
 from datetime import datetime, timedelta
 from typing import Dict, List, Set, Tuple
 
@@ -21,21 +22,41 @@ from ortools.linear_solver import pywraplp
 from app.models import AllocationResult, CapacityRecord, LoadRecord, RoutingRecord
 
 
-BIG_M = 1_000_000.0
+BIG_M = 1_000_000_000.0
+SETUP_TRIGGER_THRESHOLD_TONS = 1.0
+SETUP_TRIGGER_PENALTY = 1_000_000.0
+SETUP_TONS_PENALTY = 1.0
 TOLLER_PENALTY = 100_000.0
 ALTERNATIVE_PENALTY = 1_000.0
 PRIMARY_PENALTY = 10.0
 CAPACITY_BASE_PENALTY = 0.0
 PRIORITY_BASE_PENALTY = 10
 EPSILON = 1e-6
+REPORT_DATA_DECIMALS = 10
 
 DemandKey = Tuple[str, str, str, str]  # month, product, plant, source_resource
 DemandMap = Dict[DemandKey, float]
 EffCapMap = Dict[Tuple[str, str], float]
+SetupShareMap = Dict[Tuple[str, str], float]
+SetupTonsMap = Dict[Tuple[str, str], float]
 NodeMetaMap = Dict[DemandKey, Tuple[str, str]]  # product_family, merged planner names
 EligibleRoute = Tuple[str, int, str, float]
 RouteMap = Dict[DemandKey, List[EligibleRoute]]
 GlobalRoute = Tuple[str, int, str, float, str, float]
+
+
+def _report_number(value: float) -> float:
+    return round(float(value or 0.0), REPORT_DATA_DECIMALS)
+
+
+def _create_mip_solver() -> pywraplp.Solver:
+    solver = pywraplp.Solver.CreateSolver("SCIP")
+    if not solver:
+        solver = pywraplp.Solver.CreateSolver("CBC_MIXED_INTEGER_PROGRAMMING")
+    if not solver:
+        raise RuntimeError("OR-Tools mixed-integer solver could not be created.")
+    solver.SuppressOutput()
+    return solver
 
 
 def run_optimization_mode_a(
@@ -49,6 +70,7 @@ def run_optimization_mode_a(
     all_results: List[AllocationResult] = []
     for month in months:
         eff_cap = _build_eff_cap(capacities, month)
+        setup_share, setup_equiv_tons = _build_setup_maps(capacities, month)
         eligible = {
             demand_key: _build_capacity_only_routes(demand_key, eff_cap)
             for demand_key in demand
@@ -62,6 +84,8 @@ def run_optimization_mode_a(
             full_demand=demand,
             node_meta=node_meta,
             eff_cap=eff_cap,
+            setup_share=setup_share,
+            setup_equiv_tons=setup_equiv_tons,
             eligible=eligible,
             wc_limits={},
             verbose=verbose,
@@ -97,6 +121,7 @@ def run_optimization_mode_b(
 
         baseline_eff_cap = _build_eff_cap(baseline_capacities, month)
         routing_eff_cap = _build_eff_cap(routing_capacities, month)
+        routing_setup_share, routing_setup_equiv_tons = _build_setup_maps(routing_capacities, month)
         month_results = _run_global_routing_lp_for_nodes(
             month=month,
             nodes=monthly_nodes,
@@ -105,6 +130,8 @@ def run_optimization_mode_b(
             node_meta=node_meta,
             baseline_eff_cap=baseline_eff_cap,
             routing_eff_cap=routing_eff_cap,
+            setup_share=routing_setup_share,
+            setup_equiv_tons=routing_setup_equiv_tons,
             routings=routings,
             verbose=verbose,
         )
@@ -179,6 +206,29 @@ def _build_eff_cap(capacities: List[CapacityRecord], month: str | None = None) -
     for record in capacities:
         eff_cap[(record.product, record.work_center)] = record.effective_monthly_capacity_tons
     return eff_cap
+
+
+def _build_setup_maps(
+    capacities: List[CapacityRecord],
+    month: str,
+) -> Tuple[SetupShareMap, SetupTonsMap]:
+    month_hours = _month_hours(month)
+    setup_share: SetupShareMap = {}
+    setup_equiv_tons: SetupTonsMap = {}
+    for record in _select_effective_capacity_records(capacities, month):
+        setup_hours = float(record.setup_hours or 0.0)
+        if setup_hours <= EPSILON:
+            continue
+        key = (record.product, record.work_center)
+        setup_share[key] = setup_hours / month_hours
+        setup_equiv_tons[key] = setup_hours * record.setup_reference_monthly_capacity_tons / month_hours
+    return setup_share, setup_equiv_tons
+
+
+def _month_hours(month: str) -> float:
+    year = int(str(month)[:4])
+    month_num = int(str(month)[5:7])
+    return float(calendar.monthrange(year, month_num)[1] * 24)
 
 
 def _select_effective_capacity_records(
@@ -341,6 +391,8 @@ def _run_global_routing_lp_for_nodes(
     node_meta: NodeMetaMap,
     baseline_eff_cap: EffCapMap,
     routing_eff_cap: EffCapMap,
+    setup_share: SetupShareMap,
+    setup_equiv_tons: SetupTonsMap,
     routings: List[RoutingRecord],
     verbose: bool = False,
 ) -> List[AllocationResult]:
@@ -351,13 +403,11 @@ def _run_global_routing_lp_for_nodes(
     routes = _build_global_routes(nodes, baseline_eff_cap, routing_eff_cap, routings)
     toller_products = _eligible_toller_products(routings)
 
-    solver = pywraplp.Solver.CreateSolver("GLOP")
-    if not solver:
-        raise RuntimeError("OR-Tools GLOP solver could not be created.")
-    solver.SuppressOutput()
+    solver = _create_mip_solver()
     inf = solver.infinity()
 
     x: Dict[Tuple[DemandKey, str, str], pywraplp.Variable] = {}
+    setup_used: Dict[Tuple[str, str], pywraplp.Variable] = {}
     outsource: Dict[DemandKey, pywraplp.Variable] = {}
     unmet: Dict[DemandKey, pywraplp.Variable] = {}
 
@@ -385,6 +435,21 @@ def _run_global_routing_lp_for_nodes(
             if variable is not None:
                 constraint.SetCoefficient(variable, 1.0)
 
+    product_wc_variables: Dict[Tuple[str, str], List[pywraplp.Variable]] = {}
+    for (demand_key, wc, _allocation_source), variable in x.items():
+        product_wc_variables.setdefault((demand_key[1], wc), []).append(variable)
+
+    for (product, wc), variables in product_wc_variables.items():
+        if setup_share.get((product, wc), 0.0) <= EPSILON:
+            continue
+        setup_name = abs(hash((month, product, wc)))
+        setup_var = solver.IntVar(0.0, 1.0, f"setup_{setup_name}")
+        setup_used[(product, wc)] = setup_var
+        link = solver.Constraint(-inf, SETUP_TRIGGER_THRESHOLD_TONS, f"setup_link_{setup_name}")
+        for variable in variables:
+            link.SetCoefficient(variable, 1.0)
+        link.SetCoefficient(setup_var, -sum(demand.values()))
+
     all_wcs = {wc for _demand_key, wc, _source in x}
     for wc in all_wcs:
         constraint = solver.Constraint(-inf, 1.0, f"cap_{wc}")
@@ -395,6 +460,9 @@ def _run_global_routing_lp_for_nodes(
                 variable = x.get((demand_key, wc, allocation_source))
                 if variable is not None and cap > 0:
                     constraint.SetCoefficient(variable, 1.0 / cap)
+        for (product, setup_wc), setup_var in setup_used.items():
+            if setup_wc == wc:
+                constraint.SetCoefficient(setup_var, setup_share.get((product, wc), 0.0))
 
     objective = solver.Objective()
     objective.SetMinimization()
@@ -402,6 +470,11 @@ def _run_global_routing_lp_for_nodes(
         objective.SetCoefficient(variable, BIG_M)
     for demand_key, variable in outsource.items():
         objective.SetCoefficient(variable, TOLLER_PENALTY)
+    for key, variable in setup_used.items():
+        objective.SetCoefficient(
+            variable,
+            SETUP_TRIGGER_PENALTY + setup_equiv_tons.get(key, 0.0) * SETUP_TONS_PENALTY,
+        )
     for (demand_key, wc, allocation_source), variable in x.items():
         route = _find_global_route(demand_key, wc, allocation_source, routes)
         if route is None:
@@ -431,8 +504,8 @@ def _run_global_routing_lp_for_nodes(
             if variable is None:
                 continue
             allocated_tons = max(variable.solution_value(), 0.0)
-            rounded_allocated = round(allocated_tons, 4)
-            if allocated_tons < EPSILON or rounded_allocated <= 0.0:
+            stored_allocated = _report_number(allocated_tons)
+            if allocated_tons < EPSILON or stored_allocated <= 0.0:
                 continue
             if allocation_source == "Capacity_Base":
                 capacity_base_allocated[demand_key] = capacity_base_allocated.get(demand_key, 0.0) + allocated_tons
@@ -446,14 +519,23 @@ def _run_global_routing_lp_for_nodes(
                 work_center=wc,
                 route_type=route_type,
                 priority=priority,
-                demand_tons=round(display_demand, 4),
-                allocated_tons=rounded_allocated,
+                demand_tons=_report_number(display_demand),
+                allocated_tons=stored_allocated,
                 outsourced_tons=0.0,
                 unmet_tons=0.0,
-                capacity_share_pct=round(100.0 * allocated_tons / cap, 2),
+                capacity_share_pct=_report_number(100.0 * allocated_tons / cap),
                 planner_name=planner_names,
                 allocation_source=allocation_source,
+                capacity_used_tons=stored_allocated,
             ))
+
+    _apply_setup_to_internal_results(
+        internal_results,
+        setup_used=setup_used,
+        setup_share=setup_share,
+        setup_equiv_tons=setup_equiv_tons,
+        eff_cap=routing_eff_cap,
+    )
 
     outsource_rows = _build_outsource_rows(final_outsourced, full_demand, node_meta)
     unmet_rows = _build_unmet_rows(final_unmet, full_demand, node_meta)
@@ -577,6 +659,36 @@ def _global_route_objective_penalty(route_type: str, priority: int, penalty: flo
     return base + max(float(penalty or 0.0), 0.0) + max(priority - 1, 0) * 0.01
 
 
+def _apply_setup_to_internal_results(
+    results: List[AllocationResult],
+    *,
+    setup_used: Dict[Tuple[str, str], pywraplp.Variable],
+    setup_share: SetupShareMap,
+    setup_equiv_tons: SetupTonsMap,
+    eff_cap: EffCapMap,
+) -> None:
+    applied: Set[Tuple[str, str]] = set()
+    for result in results:
+        if result.allocation_type != "Internal":
+            continue
+        key = (result.product, result.work_center)
+        result.capacity_used_tons = _report_number(result.allocated_tons)
+        setup_var = setup_used.get(key)
+        if setup_var is None or setup_var.solution_value() < 0.5 or key in applied:
+            continue
+        applied.add(key)
+        setup_equiv = setup_equiv_tons.get(key, 0.0)
+        result.setup_applied = True
+        result.setup_hours = _report_number(setup_share.get(key, 0.0) * _month_hours(result.month))
+        result.setup_equivalent_tons_by_max = _report_number(setup_equiv)
+        result.capacity_used_tons = _report_number(result.allocated_tons + setup_equiv)
+        cap = eff_cap.get(key, 0.0)
+        if cap > EPSILON:
+            result.capacity_share_pct = _report_number(
+                float(result.capacity_share_pct or 0.0) + 100.0 * setup_share.get(key, 0.0)
+            )
+
+
 def _route_penalty(routing: RoutingRecord) -> float:
     if routing.penalty_weight > 0:
         return routing.penalty_weight
@@ -614,6 +726,8 @@ def _run_lp_for_nodes(
     full_demand: DemandMap,
     node_meta: NodeMetaMap,
     eff_cap: EffCapMap,
+    setup_share: SetupShareMap,
+    setup_equiv_tons: SetupTonsMap,
     eligible: RouteMap,
     wc_limits: Dict[str, float],
     allocation_source: str = "",
@@ -624,13 +738,11 @@ def _run_lp_for_nodes(
     if not nodes:
         return [], {}
 
-    solver = pywraplp.Solver.CreateSolver("GLOP")
-    if not solver:
-        raise RuntimeError("OR-Tools GLOP solver could not be created.")
-    solver.SuppressOutput()
+    solver = _create_mip_solver()
     inf = solver.infinity()
 
     x: Dict[Tuple[DemandKey, str], pywraplp.Variable] = {}
+    setup_used: Dict[Tuple[str, str], pywraplp.Variable] = {}
     unmet: Dict[DemandKey, pywraplp.Variable] = {}
 
     for demand_key in nodes:
@@ -650,6 +762,21 @@ def _run_lp_for_nodes(
             if (demand_key, wc) in x:
                 constraint.SetCoefficient(x[(demand_key, wc)], 1.0)
 
+    product_wc_variables: Dict[Tuple[str, str], List[pywraplp.Variable]] = {}
+    for (demand_key, wc), variable in x.items():
+        product_wc_variables.setdefault((demand_key[1], wc), []).append(variable)
+
+    for (product, wc), variables in product_wc_variables.items():
+        if setup_share.get((product, wc), 0.0) <= EPSILON:
+            continue
+        setup_name = abs(hash((month, product, wc)))
+        setup_var = solver.IntVar(0.0, 1.0, f"setup_{setup_name}")
+        setup_used[(product, wc)] = setup_var
+        link = solver.Constraint(-inf, SETUP_TRIGGER_THRESHOLD_TONS, f"setup_link_{setup_name}")
+        for variable in variables:
+            link.SetCoefficient(variable, 1.0)
+        link.SetCoefficient(setup_var, -sum(demand.values()))
+
     all_wcs = {wc for _demand_key, wc in x}
     for wc in all_wcs:
         limit = wc_limits.get(wc, 1.0)
@@ -664,11 +791,19 @@ def _run_lp_for_nodes(
             product = demand_key[1]
             if (demand_key, wc) in x:
                 constraint.SetCoefficient(x[(demand_key, wc)], 1.0 / eff_cap[(product, wc)])
+        for (product, setup_wc), setup_var in setup_used.items():
+            if setup_wc == wc:
+                constraint.SetCoefficient(setup_var, setup_share.get((product, wc), 0.0))
 
     objective = solver.Objective()
     objective.SetMinimization()
     for demand_key in nodes:
         objective.SetCoefficient(unmet[demand_key], BIG_M)
+    for key, variable in setup_used.items():
+        objective.SetCoefficient(
+            variable,
+            SETUP_TRIGGER_PENALTY + setup_equiv_tons.get(key, 0.0) * SETUP_TONS_PENALTY,
+        )
     for (demand_key, wc), variable in x.items():
         penalty = _get_penalty(demand_key, wc, eligible)
         product = demand_key[1]
@@ -695,8 +830,8 @@ def _run_lp_for_nodes(
             if (demand_key, wc) not in x:
                 continue
             allocated_tons = max(x[(demand_key, wc)].solution_value(), 0.0)
-            rounded_allocated = round(allocated_tons, 4)
-            if allocated_tons < EPSILON or rounded_allocated <= 0.0:
+            stored_allocated = _report_number(allocated_tons)
+            if allocated_tons < EPSILON or stored_allocated <= 0.0:
                 continue
             cap = eff_cap[(product, wc)]
             results.append(AllocationResult(
@@ -709,14 +844,23 @@ def _run_lp_for_nodes(
                 work_center=wc,
                 route_type=route_type,
                 priority=priority,
-                demand_tons=round(display_demand, 4),
-                allocated_tons=rounded_allocated,
+                demand_tons=_report_number(display_demand),
+                allocated_tons=stored_allocated,
                 outsourced_tons=0.0,
                 unmet_tons=0.0,
-                capacity_share_pct=round(100.0 * allocated_tons / cap, 2),
+                capacity_share_pct=_report_number(100.0 * allocated_tons / cap),
                 planner_name=planner_names,
                 allocation_source=allocation_source,
+                capacity_used_tons=stored_allocated,
             ))
+
+    _apply_setup_to_internal_results(
+        results,
+        setup_used=setup_used,
+        setup_share=setup_share,
+        setup_equiv_tons=setup_equiv_tons,
+        eff_cap=eff_cap,
+    )
 
     if verbose:
         label = f"[{phase_label}] " if phase_label else ""
@@ -750,10 +894,10 @@ def _build_unmet_rows(
             work_center="[UNALLOCATED]",
             route_type="N/A",
             priority=99,
-            demand_tons=round(full_demand.get(demand_key, unmet_tons), 4),
+            demand_tons=_report_number(full_demand.get(demand_key, unmet_tons)),
             allocated_tons=0.0,
             outsourced_tons=0.0,
-            unmet_tons=round(unmet_tons, 4),
+            unmet_tons=_report_number(unmet_tons),
             capacity_share_pct=0.0,
             planner_name=planner_names,
             allocation_source=allocation_source,
@@ -783,9 +927,9 @@ def _build_outsource_rows(
             work_center="[OUTSOURCED]",
             route_type="Toller",
             priority=99,
-            demand_tons=round(full_demand.get(demand_key, outsourced_tons), 4),
+            demand_tons=_report_number(full_demand.get(demand_key, outsourced_tons)),
             allocated_tons=0.0,
-            outsourced_tons=round(outsourced_tons, 4),
+            outsourced_tons=_report_number(outsourced_tons),
             unmet_tons=0.0,
             capacity_share_pct=0.0,
             planner_name=planner_names,
@@ -804,14 +948,8 @@ def _apply_stage_trace(
         if result.month != month:
             continue
         demand_key = _demand_key_from_result(result)
-        result.residual_after_capacity_tons = round(
-            residual_after_capacity.get(demand_key, 0.0),
-            4,
-        )
-        result.residual_after_routing_tons = round(
-            residual_after_routing.get(demand_key, 0.0),
-            4,
-        )
+        result.residual_after_capacity_tons = _report_number(residual_after_capacity.get(demand_key, 0.0))
+        result.residual_after_routing_tons = _report_number(residual_after_routing.get(demand_key, 0.0))
 
 
 def _apply_final_balances(
@@ -822,11 +960,11 @@ def _apply_final_balances(
     final_outsourced = final_outsourced or {}
     for result in results:
         demand_key = _demand_key_from_result(result)
-        result.unmet_tons = round(final_unmet.get(demand_key, 0.0), 4)
+        result.unmet_tons = _report_number(final_unmet.get(demand_key, 0.0))
         if result.allocation_type == "Outsourced":
-            result.outsourced_tons = round(final_outsourced.get(demand_key, result.outsourced_tons), 4)
+            result.outsourced_tons = _report_number(final_outsourced.get(demand_key, result.outsourced_tons))
         else:
-            result.outsourced_tons = round(result.outsourced_tons, 4)
+            result.outsourced_tons = _report_number(result.outsourced_tons)
 
 
 def _accumulate_wc_used(

@@ -7,6 +7,27 @@ The format is based on a simple release log:
 - `Changed` for behavior or workflow updates
 - `Fixed` for bug fixes
 
+## [v2.2.1] - 2026-06-07
+
+Setup-time capacity release with refreshed input data and reporting guidance.
+
+### Added
+- Added `Setup_Hours` input handling for `master_capacity.csv` and `master_routing.csv`
+- Added setup-related report columns in allocation detail outputs: `Setup_Applied`, `Setup_Hours`, `Setup_Equivalent_Tons_By_Max`, and `Capacity_Used_Tons`
+- Added detailed validation for missing, negative, non-numeric, or inconsistent setup-time master data
+- Added a detailed Chinese Word operation guide for inputs, parameters, calculation logic, report sorting, and report-column meanings
+
+### Changed
+- Capacity solving now consumes setup capacity when a month/product/workcenter allocation exceeds 1 ton
+- Setup equivalent tons are calculated from Max capacity and natural calendar month hours
+- Allocation detail reports now sort by capacity basis, month, plant, workcenter, product, planner, source resource, allocation type, route type, and priority
+- Sample input data now uses the consolidated `planner3_load.csv` source with archived legacy planner load files
+- Tool version string updated to `v2.2.1`
+
+### Fixed
+- Setup values must match across capacity and routing master data for the same product/workcenter before optimization can run
+- Allocation detail reporting now keeps related month/plant/workcenter/product rows together to reduce setup-time interpretation errors
+
 ## [v2.1.3] - 2026-05-05
 
 Demand-node modeling release with refreshed packaging artifacts.

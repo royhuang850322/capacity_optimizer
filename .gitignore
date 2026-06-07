@@ -64,6 +64,7 @@ workspace_manifest.json
 # Local document files; remove this rule if you want to publish Word docs
 *.docx
 !Capacity_Optimizer_User_Manual_CN.docx
+!docs/Capacity_Optimizer_v*_User_Guide_CN.docx
 
 # Local scratch archive
 archive/local_workspace/

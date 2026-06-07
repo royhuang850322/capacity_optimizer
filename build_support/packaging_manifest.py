@@ -26,7 +26,7 @@ class PackagingTarget:
 _COMMON_RESOURCE_DIR_MAPPINGS: tuple[tuple[str, str], ...] = ()
 
 _COMMON_RESOURCE_FILE_MAPPINGS = (
-    ("Data_Input/planner1_load.csv", "resources/Data_Input"),
+    ("Data_Input/planner3_load.csv", "resources/Data_Input"),
     ("Data_Input/master_capacity.csv", "resources/Data_Input"),
     ("Data_Input/master_routing.csv", "resources/Data_Input"),
     ("Data_Input/DATA_INPUT_GUIDE_CN.md", "resources/Data_Input"),

@@ -162,7 +162,17 @@ def build_result_analysis(
         if col in detail_df.columns:
             detail_df[col] = detail_df[col].map(_as_text)
 
-    for col in ("Demand_Tons", "Allocated_Tons", "Outsourced_Tons", "Unmet_Tons", "CapacityShare_Pct", "Priority"):
+    for col in (
+        "Demand_Tons",
+        "Allocated_Tons",
+        "Outsourced_Tons",
+        "Unmet_Tons",
+        "CapacityShare_Pct",
+        "Setup_Hours",
+        "Setup_Equivalent_Tons_By_Max",
+        "Capacity_Used_Tons",
+        "Priority",
+    ):
         if col in detail_df.columns:
             detail_df[col] = pd.to_numeric(detail_df[col], errors="coerce").fillna(0.0)
 

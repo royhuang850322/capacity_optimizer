@@ -11,6 +11,7 @@ import os
 import re
 from collections import defaultdict
 from datetime import datetime
+from numbers import Real
 from typing import Any, List, Optional
 
 import pandas as pd
@@ -82,6 +83,7 @@ BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 PCT_FMT = "0.0%"
 TONS_FMT = "#,##0.0"
 INT_FMT = "#,##0"
+REPORT_DATA_DECIMALS = 10
 FILTER_SLOTS = 8
 DASHBOARD_LAST_COL = 20
 _ACTIVE_REPORT_LANGUAGE = "en"
@@ -258,6 +260,10 @@ def _plannerize_results(
             allocation_source=result.allocation_source,
             residual_after_capacity_tons=result.residual_after_capacity_tons,
             residual_after_routing_tons=result.residual_after_routing_tons,
+            setup_applied=result.setup_applied,
+            setup_hours=result.setup_hours,
+            setup_equivalent_tons_by_max=result.setup_equivalent_tons_by_max,
+            capacity_used_tons=result.capacity_used_tons,
         )
         for result in results
     ]
@@ -537,6 +543,10 @@ def _results_to_df(
         "Outsourced_Tons",
         "Unmet_Tons",
         "CapacityShare_Pct",
+        "Setup_Applied",
+        "Setup_Hours",
+        "Setup_Equivalent_Tons_By_Max",
+        "Capacity_Used_Tons",
         "Allocation_Source",
         "Residual_After_Capacity_Tons",
         "Residual_After_Routing_Tons",
@@ -559,10 +569,14 @@ def _results_to_df(
                 "Outsourced_Tons": result.outsourced_tons,
                 "Unmet_Tons": result.unmet_tons,
                 "CapacityShare_Pct": (
-                    round(float(result.capacity_share_pct or 0.0) / 100.0, 6)
+                    _round_report_numeric(float(result.capacity_share_pct or 0.0) / 100.0)
                     if result.allocation_type == "Internal"
                     else 0.0
                 ),
+                "Setup_Applied": "Yes" if result.setup_applied else "No",
+                "Setup_Hours": result.setup_hours,
+                "Setup_Equivalent_Tons_By_Max": result.setup_equivalent_tons_by_max,
+                "Capacity_Used_Tons": result.capacity_used_tons,
                 "Allocation_Source": result.allocation_source,
                 "Residual_After_Capacity_Tons": result.residual_after_capacity_tons,
                 "Residual_After_Routing_Tons": result.residual_after_routing_tons,
@@ -3455,7 +3469,7 @@ def _write_planner_product_month_summary(wb: Workbook, analysis: dict[str, Any])
 
 def _write_detail(wb: Workbook, df: pd.DataFrame) -> None:
     ws = wb.create_sheet(_sheet_title("Allocation_Detail"))
-    detail_df = _reorder_detail_columns(df)
+    detail_df = _reorder_detail_columns(_sort_allocation_detail_rows(df))
     has_capacity_basis = "Capacity_Basis" in detail_df.columns
     freeze_col_index = len(
         [column for column in detail_df.columns if column in {"Capacity_Basis", "Month", "PlannerName", "Product", "ProductFamily", "Plant", "Source_Resource", "AllocationType", "WorkCenter"}]
@@ -3481,6 +3495,9 @@ def _write_detail(wb: Workbook, df: pd.DataFrame) -> None:
             "Outsourced_Tons": TONS_FMT,
             "Unmet_Tons": TONS_FMT,
             "CapacityShare_Pct": PCT_FMT,
+            "Setup_Hours": "0.00",
+            "Setup_Equivalent_Tons_By_Max": TONS_FMT,
+            "Capacity_Used_Tons": TONS_FMT,
             "Residual_After_Capacity_Tons": TONS_FMT,
             "Residual_After_Routing_Tons": TONS_FMT,
         },
@@ -3818,7 +3835,7 @@ def _write_single_kpi_card(
         f"{ws.cell(value_row, left_col).coordinate}:{ws.cell(value_row + 1, right_col).coordinate}"
     )
     value_cell = ws.cell(value_row, left_col)
-    value_cell.value = value
+    value_cell.value = _round_report_numeric(value)
     value_cell.fill = body_fill
     value_cell.font = Font(color="1F1F1F", bold=True, size=20)
     value_cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -3876,7 +3893,7 @@ def _write_compare_kpi_card(
             f"{ws.cell(top_row + 2, start_col).coordinate}:{ws.cell(top_row + 2, end_col).coordinate}"
         )
         value_cell = ws.cell(top_row + 2, start_col)
-        value_cell.value = value
+        value_cell.value = _round_report_numeric(value)
         value_cell.fill = fill
         value_cell.font = Font(color="1F1F1F", bold=True, size=15)
         value_cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -3902,7 +3919,8 @@ def _write_metric_block(
         label_cell = ws.cell(start_row + offset, start_col)
         value_cell = ws.cell(start_row + offset, start_col + 1)
         label_cell.value = localize_value(_lang(), label)
-        value_cell.value = localize_value(_lang(), value)
+        stored_value = _round_report_numeric(value)
+        value_cell.value = localize_value(_lang(), stored_value)
         label_cell.font = Font(bold=True)
         label_cell.fill = SUBHDR_FILL
         for cell in (label_cell, value_cell):
@@ -4291,6 +4309,10 @@ def _set_allocation_detail_column_layout(ws, has_capacity_basis: bool) -> None:
         "Q": 18,
         "R": 18,
         "S": 18,
+        "T": 12,
+        "U": 14,
+        "V": 18,
+        "W": 18,
     }
     if not has_capacity_basis:
         widths = {
@@ -4312,6 +4334,10 @@ def _set_allocation_detail_column_layout(ws, has_capacity_basis: bool) -> None:
             "P": 18,
             "Q": 18,
             "R": 18,
+            "S": 12,
+            "T": 14,
+            "U": 18,
+            "V": 18,
         }
     for column, width in widths.items():
         ws.column_dimensions[column].width = width
@@ -4320,7 +4346,7 @@ def _set_allocation_detail_column_layout(ws, has_capacity_basis: bool) -> None:
 def _prepare_allocation_detail_sheet(ws, subtitle: str, freeze_panes: str, has_capacity_basis: bool) -> None:
     ws.sheet_view.showGridLines = False
     _set_allocation_detail_column_layout(ws, has_capacity_basis=has_capacity_basis)
-    end_col = "S" if has_capacity_basis else "R"
+    end_col = "W" if has_capacity_basis else "V"
     ws.merge_cells(f"A1:{end_col}1")
     ws["A1"] = _sheet_title("Allocation_Detail")
     ws["A1"].fill = HDR_FILL
@@ -4391,6 +4417,10 @@ def _reorder_detail_columns(df: pd.DataFrame) -> pd.DataFrame:
         "Outsourced_Tons",
         "Unmet_Tons",
         "CapacityShare_Pct",
+        "Setup_Applied",
+        "Setup_Hours",
+        "Setup_Equivalent_Tons_By_Max",
+        "Capacity_Used_Tons",
         "Allocation_Source",
         "Residual_After_Capacity_Tons",
         "Residual_After_Routing_Tons",
@@ -4400,6 +4430,38 @@ def _reorder_detail_columns(df: pd.DataFrame) -> pd.DataFrame:
     ordered = [column for column in preferred if column in df.columns]
     trailing = [column for column in df.columns if column not in ordered]
     return df[ordered + trailing].copy()
+
+
+def _sort_allocation_detail_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+
+    preferred_order = [
+        "Capacity_Basis",
+        "Month",
+        "Plant",
+        "WorkCenter",
+        "Product",
+        "PlannerName",
+        "Source_Resource",
+        "AllocationType",
+        "RouteType",
+        "Priority",
+    ]
+    sort_columns = [column for column in preferred_order if column in df.columns]
+    if not sort_columns:
+        return df.copy()
+
+    def _sort_key(series: pd.Series) -> pd.Series:
+        if series.name == "Priority":
+            return pd.to_numeric(series, errors="coerce").fillna(999999)
+        values = series.fillna("").astype(str).str.casefold()
+        if series.name == "WorkCenter":
+            placeholder = values.str.startswith("[")
+            return placeholder.map({False: "0", True: "1"}) + values
+        return values
+
+    return df.sort_values(sort_columns, key=_sort_key, kind="mergesort").reset_index(drop=True)
 
 
 def _write_header_row(ws, headers: list[str], start_row: int = 1, start_col: int = 1) -> None:
@@ -4452,7 +4514,8 @@ def _write_table(
             if _is_nan(value):
                 cell.value = None
             else:
-                cell.value = localize_value(_lang(), value) if localize_cells else value
+                stored_value = _round_report_numeric(value)
+                cell.value = localize_value(_lang(), stored_value) if localize_cells else stored_value
             cell.border = BORDER
             if alternating_fill and row_offset % 2 == 0:
                 cell.fill = alternating_fill
@@ -4501,6 +4564,14 @@ def _is_nan(value: Any) -> bool:
         return math.isnan(value)
     except Exception:
         return False
+
+
+def _round_report_numeric(value: Any) -> Any:
+    if isinstance(value, bool) or _is_nan(value):
+        return value
+    if isinstance(value, Real):
+        return round(float(value), REPORT_DATA_DECIMALS)
+    return value
 
 
 def _sanitize_filename_segment(value: str) -> str:
