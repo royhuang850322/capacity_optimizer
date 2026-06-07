@@ -29,8 +29,8 @@
 - 运行路径治理集中在单独模块，不要把路径规则散落在业务代码里
 - 区分 install 目录和 user workspace 目录
 - user workspace 至少包含：
-  - Tooling Control Panel
   - Data_Input
+  - docs
   - output
   - logs
   - licenses
@@ -84,8 +84,8 @@
 - source mode 可以使用仓库根目录作为 workspace
 - packaged mode 默认使用 user workspace
 - workspace 目录至少包含：
-  - Tooling Control Panel
   - Data_Input
+  - docs
   - output
   - logs
   - licenses

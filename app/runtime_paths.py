@@ -65,7 +65,7 @@ def build_runtime_paths(
     user_workspace_dir = Path(user_workspace_dir).expanduser().resolve()
 
     bundled_docs_dir = bundled_resources_dir / "docs"
-    templates_dir = user_workspace_dir / "Tooling Control Panel"
+    templates_dir = user_workspace_dir / "Archive" / "legacy_excel_control_panel"
     workspace_docs_dir = user_workspace_dir / "docs"
     workspace_input_dir = user_workspace_dir / "Data_Input"
     outputs_dir = user_workspace_dir / "output"

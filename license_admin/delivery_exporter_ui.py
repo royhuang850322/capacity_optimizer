@@ -64,7 +64,7 @@ class DeliveryExporterApp:
             container,
             text=(
                 "This tool creates a clean customer-facing runtime package. "
-                "It copies only the runtime files, regenerates a fresh control workbook, "
+                "It copies only the launcher-first runtime files "
                 "and can optionally include a signed license file."
             ),
             wraplength=920,
@@ -114,7 +114,7 @@ class DeliveryExporterApp:
         ttk.Label(
             notes_frame,
             text=(
-                "Included: app, runtime, Tooling Control Panel, docs for customers, Data_Input "
+                "Included: launcher, app, runtime, docs for customers, Data_Input "
                 "(optional), output, licenses folders, README, LICENSE, requirements.txt.\n"
                 "Excluded: tests, internal license administration files, private keys, and internal SOP files."
             ),

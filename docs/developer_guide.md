@@ -6,7 +6,7 @@ This guide is for internal engineers maintaining build, packaging, and release.
 
 Key folders:
 
-- `app/` core runtime, optimizer logic, workbook handling
+- `app/` core runtime, optimizer logic, launcher integration, report handling
 - `tests/` unit, regression, packaging, and smoke tests
 - `runtime/` helper batch scripts for source-mode operation
 - `packaging/` PyInstaller spec and build scripts
@@ -20,27 +20,42 @@ Recommended:
 - Python 3.11+ on Windows
 - virtual environment per repository clone
 
-Setup:
+Fast setup:
+
+```powershell
+.\scripts\bootstrap_dev.ps1
+```
+
+Manual setup:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
+
+Dependency split:
+
+- `requirements.txt` contains runtime packages needed by the application.
+- `requirements-dev.txt` contains maintainer packages needed for tests, Word document generation, visual document rendering, and PyInstaller builds.
+
+Document rendering checks require external tools in addition to Python packages:
+
+- LibreOffice (`soffice`) for DOCX-to-PDF conversion.
+- Poppler (`pdftoppm`) for PDF-to-image conversion.
+
+Both tools must be discoverable on `PATH` for release document rendering.
 
 ## 3. Core Run Commands
 
-Create/refresh control workbook:
+Open the desktop launcher in source mode:
 
 ```powershell
-python -m app.create_template
+python CapacityOptimizerLauncher.pyw
 ```
 
-Run optimizer from CLI:
-
-```powershell
-python -m app.main --input-template "Tooling Control Panel/Capacity_Optimizer_Control.xlsx"
-```
+Developers can still exercise the legacy workbook CLI for regression coverage, but it is no longer the customer UI.
 
 ## 4. Desktop Entry
 
@@ -51,8 +66,8 @@ User-facing desktop entry:
 Responsibilities:
 
 - workspace initialization
-- open control workbook
-- trigger optimizer run
+- launcher settings management
+- trigger optimizer run with direct runtime config
 - open output/log folders
 - generate machine fingerprint request
 
@@ -91,7 +106,7 @@ Behavior:
 Run full suite:
 
 ```powershell
-python -m unittest discover -s tests -v
+python -m pytest
 ```
 
 Run smoke tests only (M8):
@@ -103,10 +118,16 @@ python -m unittest tests.test_smoke_m8 -v
 Smoke coverage includes:
 
 - runtime paths/workspace initialization
-- control workbook config load
+- launcher settings and legacy workbook regression coverage
 - minimal run + output workbook + log generation
 
 ## 8. Packaging (PyInstaller One-Folder)
+
+Run the preflight check before building a release:
+
+```powershell
+.\scripts\release_preflight.ps1
+```
 
 Build:
 
@@ -135,7 +156,7 @@ Main references:
 ## 10. Release Checklist
 
 1. update version/changelog
-2. run full tests
+2. run `.\scripts\release_preflight.ps1`
 3. build one-folder dist
 4. verify dist layout
 5. verify launcher flow on clean machine

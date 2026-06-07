@@ -1,8 +1,8 @@
 """
-Chemical Capacity Optimizer CLI entry point.
+Chemical Capacity Optimizer legacy workbook CLI entry point.
 
-Excel-first workflow:
-  python -m app.main --input-template "Tooling Control Panel/Capacity_Optimizer_Control.xlsx"
+Business users should run the desktop launcher. This CLI remains available for
+legacy workbook regression coverage and support workflows.
 """
 from __future__ import annotations
 
@@ -41,32 +41,32 @@ _ACTIVE_LOG_PATH: Path | None = None
     "--input-template",
     "-t",
     required=True,
-    help="Path to the Excel control workbook.",
+    help="Path to a legacy Excel control workbook.",
 )
 @click.option(
     "--mode",
     type=click.Choice(["mode-a", "mode-b", "both"], case_sensitive=False),
     default=None,
-    help="Override Run_Mode from the control workbook.",
+    help="Override Run_Mode from the legacy workbook.",
 )
 @click.option(
     "--verbosity",
     type=click.Choice(["config", "verbose", "quiet"], case_sensitive=False),
     default="config",
     show_default=True,
-    help="Override workbook verbosity, or keep the workbook setting.",
+    help="Override legacy workbook verbosity, or keep the workbook setting.",
 )
 @click.option(
     "--validation-policy",
     type=click.Choice(["config", "skip-errors", "stop-on-errors"], case_sensitive=False),
     default="config",
     show_default=True,
-    help="Override workbook validation behavior, or keep the workbook setting.",
+    help="Override legacy workbook validation behavior, or keep the workbook setting.",
 )
 @click.option(
     "--output-name",
     default=None,
-    help="Override Output_FileName from the control workbook.",
+    help="Override Output_FileName from the legacy workbook.",
 )
 def main(
     input_template: str,

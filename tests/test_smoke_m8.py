@@ -146,7 +146,7 @@ class SmokeM8Tests(unittest.TestCase):
             ]
         ).to_csv(os.path.join(data_dir, "master_capacity.csv"), index=False)
 
-        workbook_path = os.path.join(project_root_abs, "Tooling Control Panel", "Capacity_Optimizer_Control.xlsx")
+        workbook_path = os.path.join(project_root_abs, "Archive", "legacy_excel_control_panel", "Capacity_Optimizer_Control.xlsx")
         write_control_workbook(workbook_path, load_dir=data_dir)
         self._set_control_values(workbook_path, project_root_abs)
         return workbook_path

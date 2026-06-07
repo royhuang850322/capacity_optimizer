@@ -1053,7 +1053,7 @@ class RegressionTests(unittest.TestCase):
     def test_create_template_and_load_control_config(self):
         with workspace_tempdir() as tmpdir:
             project_root = os.path.join(tmpdir, "portable_root")
-            template_path = os.path.join(project_root, "Tooling Control Panel", "Capacity_Optimizer_Control.xlsx")
+            template_path = os.path.join(project_root, "Archive", "legacy_excel_control_panel", "Capacity_Optimizer_Control.xlsx")
             runner = CliRunner()
             result = runner.invoke(create_template_main, ["--out", template_path])
 
@@ -1115,7 +1115,7 @@ class RegressionTests(unittest.TestCase):
     def test_refresh_control_workbook_license_sheet_updates_license_values(self):
         with workspace_tempdir() as tmpdir:
             project_root = os.path.join(tmpdir, "portable_root")
-            template_path = os.path.join(project_root, "Tooling Control Panel", "Capacity_Optimizer_Control.xlsx")
+            template_path = os.path.join(project_root, "Archive", "legacy_excel_control_panel", "Capacity_Optimizer_Control.xlsx")
             runner = CliRunner()
             result = runner.invoke(create_template_main, ["--out", template_path])
             self.assertEqual(result.exit_code, 0, msg=result.output)

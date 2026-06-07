@@ -1,7 +1,7 @@
 # Runtime Directory Strategy
 
-This document captures the Milestone 2 runtime path rules for the Excel-first
-Capacity Optimizer.
+This document captures the runtime path rules for the launcher-first Capacity
+Optimizer.
 
 ## Goal
 
@@ -32,8 +32,8 @@ When the tool runs from source:
 - bundled resources directory = repository root
 - user workspace directory = repository root
 
-This preserves the current Excel-first development workflow and avoids
-unnecessary behavior changes during the migration.
+This preserves source-mode development while keeping the desktop launcher as
+the primary user entry.
 
 ## Frozen / Packaged Mode
 
@@ -55,7 +55,7 @@ Within the user workspace, the following structure is expected:
 
 ```text
 <workspace>\
-  Tooling Control Panel\
+  Data_Input\
   docs\
   output\
   logs\
@@ -67,8 +67,8 @@ Within the user workspace, the following structure is expected:
 
 ### Directory meanings
 
-- `Tooling Control Panel\`
-  - editable customer workbook copy
+- `Data_Input\`
+  - customer-editable planner and master input files
 - `docs\`
   - customer-facing copies of quick-start, deployment, launcher, and Python install notes
 - `output\`
@@ -88,9 +88,8 @@ In packaged mode, the runtime validates licenses with a workspace-first search
 order:
 
 1. `<workspace>\licenses\active\license.json` (preferred)
-2. `<control workbook Project_Root_Folder>\licenses\active\license.json`
-3. `<install_dir>\licenses\active\license.json` (fallback only)
-4. Legacy root-level `license.json` under each candidate root
+2. `<install_dir>\licenses\active\license.json` (fallback only)
+3. Legacy root-level `license.json` under each candidate root
 
 ## Logging Policy (Milestone 7)
 
@@ -107,7 +106,7 @@ order:
   - suggested actions
   - log file path
 
-This keeps machine-locked validation stable even when workbook project-root
+This keeps machine-locked validation stable even when workspace paths
 settings are temporarily incorrect, while preserving backward compatibility
 for older layouts.
 
@@ -116,7 +115,7 @@ for older layouts.
 Bundled read-only resources are expected to come from:
 
 - `Data_Input\`
-- workbook templates or workbook generation logic
+- archived legacy workbook generation logic when explicitly needed
 - documentation copied into delivery packages as needed
 
 In source mode these still resolve from the repository. In packaged mode they
@@ -128,7 +127,6 @@ directory.
 From this milestone onward, packaged runs should treat the install directory as
 read-only application content and the workspace as the only writable home for:
 
-- the editable control workbook
 - copied sample/demo input data
 - generated outputs
 - logs
@@ -137,7 +135,7 @@ read-only application content and the workspace as the only writable home for:
 
 Workspace initialization only creates missing files and folders. Existing user
 files are preserved, which makes upgrades safer because new installs do not
-overwrite the customer's workbook, data, or results.
+overwrite the customer's data, logs, licenses, or results.
 
 ## Current Compatibility Policy
 
@@ -146,7 +144,7 @@ Milestone 2 keeps these compatibility principles:
 - source mode remains repository-root based
 - packaged mode is ready for a separated user workspace
 - legacy root-level `license.json` remains supported by the validator
-- existing workbook-driven path settings remain intact
+- archived legacy workbook compatibility remains available for regression/support
 
 ## Why This Matters
 

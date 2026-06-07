@@ -16,7 +16,7 @@ class RuntimePathsTests(unittest.TestCase):
         self.assertEqual(paths.bundled_resources_dir, paths.app_install_dir)
         self.assertEqual(paths.bundled_docs_dir, paths.app_install_dir / "docs")
         self.assertEqual(paths.user_workspace_dir, paths.app_install_dir)
-        self.assertEqual(paths.templates_dir, paths.app_install_dir / "Tooling Control Panel")
+        self.assertEqual(paths.templates_dir, paths.app_install_dir / "Archive" / "legacy_excel_control_panel")
         self.assertEqual(paths.workspace_docs_dir, paths.app_install_dir / "docs")
         self.assertEqual(paths.outputs_dir, paths.app_install_dir / "output")
         self.assertEqual(paths.logs_dir, paths.app_install_dir / "logs")
@@ -30,7 +30,7 @@ class RuntimePathsTests(unittest.TestCase):
                 paths = resolve_runtime_paths()
 
             self.assertEqual(paths.user_workspace_dir, Path(tmpdir).resolve())
-            self.assertEqual(paths.templates_dir, Path(tmpdir).resolve() / "Tooling Control Panel")
+            self.assertEqual(paths.templates_dir, Path(tmpdir).resolve() / "Archive" / "legacy_excel_control_panel")
             self.assertEqual(paths.workspace_docs_dir, Path(tmpdir).resolve() / "docs")
             self.assertEqual(paths.outputs_dir, Path(tmpdir).resolve() / "output")
 

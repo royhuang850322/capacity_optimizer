@@ -4,8 +4,6 @@ import tempfile
 import unittest
 from contextlib import contextmanager
 
-from openpyxl import load_workbook
-
 from license_admin.export_customer_package import build_customer_package
 
 
@@ -29,6 +27,7 @@ class DeliveryPackageTests(unittest.TestCase):
     def _build_fake_project(self, root: str) -> None:
         _write_text(os.path.join(root, "requirements.txt"), "openpyxl>=3.1.5\n")
         _write_text(os.path.join(root, "LICENSE"), "MIT\n")
+        _write_text(os.path.join(root, "CapacityOptimizerLauncher.pyw"), "print('launcher')\n")
         _write_text(os.path.join(root, "app", "main.py"), "print('app')\n")
         _write_text(os.path.join(root, "app", "create_template.py"), "print('template')\n")
         _write_text(os.path.join(root, "runtime", "run_optimizer.bat"), "@echo off\n")
@@ -37,6 +36,8 @@ class DeliveryPackageTests(unittest.TestCase):
         _write_text(os.path.join(root, "Data_Input", "planner1_load.csv"), "Month,PlannerName,Product,ProductFamily,Plant,Forecast_Tons\n")
         _write_text(os.path.join(root, "docs", "CUSTOMER_LICENSE_QUICKSTART_CN.md"), "customer quickstart\n")
         _write_text(os.path.join(root, "docs", "IT_DEPLOYMENT_CHECKLIST_CN.md"), "it checklist\n")
+        _write_text(os.path.join(root, "docs", "desktop_launcher_usage.md"), "desktop launcher\n")
+        _write_text(os.path.join(root, "docs", "user_guide.md"), "user guide\n")
 
     def test_build_customer_package_creates_clean_structure(self):
         with workspace_tempdir() as tmpdir:
@@ -53,13 +54,17 @@ class DeliveryPackageTests(unittest.TestCase):
             )
 
             self.assertTrue(os.path.isdir(package_path))
+            self.assertTrue(os.path.exists(os.path.join(package_path, "CapacityOptimizerLauncher.pyw")))
             self.assertTrue(os.path.exists(os.path.join(package_path, "app", "main.py")))
             self.assertTrue(os.path.exists(os.path.join(package_path, "runtime", "run_optimizer.bat")))
-            self.assertTrue(os.path.exists(os.path.join(package_path, "Tooling Control Panel", "Capacity_Optimizer_Control.xlsx")))
+            self.assertFalse(os.path.exists(os.path.join(package_path, "Tooling Control Panel")))
+            self.assertTrue(os.path.isdir(os.path.join(package_path, "logs")))
             self.assertTrue(os.path.isdir(os.path.join(package_path, "licenses", "active")))
             self.assertTrue(os.path.isdir(os.path.join(package_path, "licenses", "requests")))
             self.assertTrue(os.path.exists(os.path.join(package_path, "docs", "CUSTOMER_LICENSE_QUICKSTART_CN.md")))
             self.assertTrue(os.path.exists(os.path.join(package_path, "docs", "IT_DEPLOYMENT_CHECKLIST_CN.md")))
+            self.assertTrue(os.path.exists(os.path.join(package_path, "docs", "desktop_launcher_usage.md")))
+            self.assertTrue(os.path.exists(os.path.join(package_path, "docs", "user_guide.md")))
             self.assertTrue(os.path.exists(os.path.join(package_path, "README.md")))
             self.assertTrue(os.path.exists(os.path.join(package_path, "delivery_manifest.json")))
             self.assertFalse(os.path.exists(os.path.join(package_path, "license_admin")))
@@ -84,11 +89,7 @@ class DeliveryPackageTests(unittest.TestCase):
             with open(os.path.join(package_path, "licenses", "active", "license.json"), "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
             self.assertEqual(payload["license_id"], "LIC-001")
-            workbook = load_workbook(os.path.join(package_path, "Tooling Control Panel", "Capacity_Optimizer_Control.xlsx"), data_only=True)
-            license_ws = workbook["License"]
-            self.assertEqual(license_ws["B5"].value, "Invalid")
-            self.assertEqual(license_ws["B6"].value, "LIC-001")
-            workbook.close()
+            self.assertFalse(os.path.exists(os.path.join(package_path, "Tooling Control Panel")))
 
 
 if __name__ == "__main__":

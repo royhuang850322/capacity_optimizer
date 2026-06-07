@@ -43,8 +43,8 @@ This executable is built from:
 The launcher remains lightweight and is responsible for:
 
 - initializing the user workspace
-- creating or opening the control workbook
 - generating machine fingerprint requests
+- saving launcher settings
 - running the optimizer
 - opening output and log folders
 
@@ -58,15 +58,15 @@ resources directory, typically `_internal\resources\`:
 - `README.md`
 - `LICENSE`
 
-### Excel template note
+### Legacy Excel workbook note
 
-The control workbook is not packaged as a fixed static template file. Instead,
-it is generated on first run by:
+The retired Excel control workbook is not packaged as the customer UI. Historical
+workbook support remains available only for legacy regression coverage through:
 
 - `app/create_template.py`
 
-This avoids shipping a user-specific workbook and keeps the packaged template
-logic aligned with the current Python code.
+Current packaged users run the desktop launcher directly through
+`CapacityOptimizer.exe`.
 
 ## Build Files
 
@@ -82,6 +82,12 @@ The packaging setup introduced in this milestone is:
 From the repository root:
 
 ```powershell
+.\scripts\release_preflight.ps1
+```
+
+Then build:
+
+```powershell
 powershell -ExecutionPolicy Bypass -File packaging\build_onefolder.ps1
 ```
 
@@ -92,6 +98,12 @@ powershell -ExecutionPolicy Bypass -File packaging\build_onefolder.ps1 -Clean
 ```
 
 ## Dependency Handling
+
+Install runtime and release dependencies before building:
+
+```powershell
+.\scripts\bootstrap_dev.ps1
+```
 
 The spec explicitly handles packaging-sensitive dependencies:
 
@@ -124,7 +136,7 @@ python packaging\verify_onefolder_dist.py --dist-root dist\CapacityOptimizer
 4. In the launcher:
    - initialize the workspace
    - generate a machine fingerprint request
-   - open the control workbook
+   - save launcher settings
    - run the optimizer after a valid license is present
 
 ## Risks and Current Limits
@@ -132,8 +144,8 @@ python packaging\verify_onefolder_dist.py --dist-root dist\CapacityOptimizer
 - This milestone prepares a stable build configuration, but the exact final
   packaged behavior still depends on PyInstaller being available in the build
   environment.
-- The packaged launcher assumes Excel desktop is available on the customer
-  machine for workbook interaction.
+- Excel desktop is useful on the customer machine for reviewing generated report
+  workbooks, but it is not required as the control UI.
 - No license file is bundled into the package; licenses remain user/workspace
   content.
 - The user workspace is still validated in later milestones as we continue

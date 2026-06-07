@@ -7,6 +7,17 @@ The format is based on a simple release log:
 - `Changed` for behavior or workflow updates
 - `Fixed` for bug fixes
 
+## [Unreleased]
+
+Launcher-first cleanup after v2.2.1.
+
+### Changed
+- Archived the retired Excel control workbook under `Archive/legacy_excel_control_panel`
+- Customer delivery package export no longer creates or ships `Tooling Control Panel/Capacity_Optimizer_Control.xlsx`
+- Source-mode `runtime/run_optimizer.bat` now starts the desktop launcher instead of the legacy workbook CLI
+- Runtime legacy workbook paths now resolve under `Archive/legacy_excel_control_panel`
+- Active user, IT, delivery, packaging, and developer docs now describe the desktop launcher as the current UI
+
 ## [v2.2.1] - 2026-06-07
 
 Setup-time capacity release with refreshed input data and reporting guidance.

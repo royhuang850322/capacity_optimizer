@@ -141,7 +141,7 @@ class DesktopLauncherTests(unittest.TestCase):
             self.assertEqual(request_path.parent, paths.license_requests_dir)
             self.assertIn("machine_fingerprint_TEST-PC_", request_path.name)
 
-    def test_run_optimizer_from_launcher_supports_legacy_cli_runner(self):
+    def test_run_optimizer_from_launcher_supports_archived_legacy_cli_runner(self):
         with workspace_tempdir() as tmpdir:
             with patch.dict("os.environ", {"CAPACITY_OPTIMIZER_WORKSPACE": tmpdir}, clear=False):
                 paths = resolve_runtime_paths()

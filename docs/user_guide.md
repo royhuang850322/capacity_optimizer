@@ -59,7 +59,7 @@ Then click `Save Settings`.
 
 ```text
 %LOCALAPPDATA%\CapacityOptimizer\
-  Tooling Control Panel\
+  Data_Input\
   docs\
   output\
   logs\
@@ -76,8 +76,9 @@ Then click `Save Settings`.
 - `License validation failed`:
   - check `licenses\active\license.json`
   - check expiry date and machine binding
-- `Could not read control workbook`:
-  - close workbook in Excel and retry
+- Launcher cannot start:
+  - verify `PySide6` is installed in source mode
+  - run `runtime\setup_requirements.bat`
 - `Failed to write output workbook`:
   - close output file in Excel
   - verify output folder write permission
@@ -86,7 +87,7 @@ Then click `Save Settings`.
 
 - Replace app package with newer version.
 - Keep workspace data unchanged.
-- Do not delete old `licenses`, `output`, or workbook unless needed.
+- Do not delete old `licenses`, `output`, `logs`, or `Data_Input` unless needed.
 
 ## 9. Support Checklist Before Raising Ticket
 

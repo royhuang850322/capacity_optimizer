@@ -2,7 +2,7 @@
 Build a clean customer delivery package from the development repository.
 
 This internal tool keeps developer-only assets out of the exported package
-and regenerates a fresh control workbook for the delivery folder.
+and prepares a launcher-first customer bundle.
 """
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ REPO_ROOT = RUNTIME_PATHS.app_install_dir
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from app.create_template import refresh_control_workbook_license_sheet, write_control_workbook
 from license_admin.license_tools.common import sanitize_path_component
 
 DEFAULT_DELIVERY_ROOT = REPO_ROOT / "delivery_packages"
@@ -28,10 +27,13 @@ TOOL_NAME = "capacity_optimizer"
 CUSTOMER_DOCS = [
     "docs/CUSTOMER_LICENSE_QUICKSTART_CN.md",
     "docs/IT_DEPLOYMENT_CHECKLIST_CN.md",
+    "docs/desktop_launcher_usage.md",
+    "docs/user_guide.md",
 ]
 ROOT_FILES = [
     "requirements.txt",
     "LICENSE",
+    "CapacityOptimizerLauncher.pyw",
 ]
 PACKAGE_DIRS = [
     "app",
@@ -81,21 +83,14 @@ def build_customer_package(
         _copy_file(project_root / relative_path, package_path / relative_path)
 
     (package_path / "output").mkdir(parents=True, exist_ok=True)
+    (package_path / "logs").mkdir(parents=True, exist_ok=True)
     (package_path / "licenses" / "active").mkdir(parents=True, exist_ok=True)
     (package_path / "licenses" / "requests").mkdir(parents=True, exist_ok=True)
-    (package_path / "Tooling Control Panel").mkdir(parents=True, exist_ok=True)
-
-    workbook_path = package_path / "Tooling Control Panel" / "Capacity_Optimizer_Control.xlsx"
-    write_control_workbook(str(workbook_path), load_dir=str(package_path / "Data_Input"))
 
     if license_file is not None:
         if not license_file.exists():
             raise FileNotFoundError(f"License file not found: {license_file}")
         shutil.copy2(license_file, package_path / "licenses" / "active" / "license.json")
-        refresh_control_workbook_license_sheet(
-            str(workbook_path),
-            project_root=str(package_path),
-        )
 
     _write_delivery_readme(
         destination=package_path,
@@ -147,7 +142,7 @@ def _write_delivery_readme(
     data_text = (
         "Demo input data is included under `Data_Input\\`."
         if include_demo_data
-        else "No demo input data was included; place customer files under `Data_Input\\` or point the control workbook to another folder."
+        else "No demo input data was included; place customer files under `Data_Input\\` or choose the input folder in the launcher."
     )
 
     content = f"""# Chemical Capacity Optimizer Delivery Package
@@ -159,11 +154,11 @@ internal development, test, and license-administration files.
 
 ## First Run
 
-1. Run `runtime\\setup_requirements.bat`
-2. Confirm or place the license at `licenses\\active\\license.json`
-3. Open `Tooling Control Panel\\Capacity_Optimizer_Control.xlsx`
-4. Save the workbook after editing settings
-5. Run `runtime\\run_optimizer.bat`
+1. Run `runtime\\setup_requirements.bat` if this is a source-mode delivery.
+2. Confirm or place the license at `licenses\\active\\license.json`.
+3. Open `CapacityOptimizerLauncher.pyw`.
+4. Click `Initialize Workspace` if needed.
+5. Configure run settings in the launcher and click `Run Optimizer`.
 
 ## Package Notes
 

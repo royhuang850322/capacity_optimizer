@@ -1,456 +1,100 @@
-﻿# Capacity Optimizer
+# Capacity Optimizer
 
-## Technical References
+Capacity Optimizer is a Windows desktop capacity-planning tool.
 
-- [Technical Reference (CN)](/C:/Users/super/capacity_optimizer/docs/TECHNICAL_REFERENCE_CN.md)
-- [User Manual (CN)](/C:/Users/super/capacity_optimizer/docs/CAPACITY_OPTIMIZER_USER_MANUAL_CN.md)
-- [Developer Guide](/C:/Users/super/capacity_optimizer/docs/developer_guide.md)
-- [User Guide](/C:/Users/super/capacity_optimizer/docs/user_guide.md)
-- [Desktop Launcher Usage](/C:/Users/super/capacity_optimizer/docs/desktop_launcher_usage.md)
-- [Runtime Directory Strategy](/C:/Users/super/capacity_optimizer/docs/runtime_directory_strategy.md)
-- [PyInstaller One-Folder Build](/C:/Users/super/capacity_optimizer/docs/pyinstaller_onefolder_build.md)
-- [Next Project Standard Prompt (CN)](/C:/Users/super/capacity_optimizer/docs/NEXT_PROJECT_STANDARD_PROMPT_CN.md)
+Current workflow:
 
-产能优化工具，当前版本采用：
-- `CSV / Excel` 作为输入数据
-- `Python + OR-Tools` 作为运算逻辑
-- `Excel` 作为用户控制面板和结果报告载体
+- Desktop GUI: `CapacityOptimizer.exe` in packaged mode, or `CapacityOptimizerLauncher.pyw` in source mode
+- Input data: CSV / Excel files under `Data_Input`
+- Optimization engine: Python + OR-Tools
+- Output reports: Excel workbooks under `output`
+- License: `licenses\active\license.json`
 
-This project now uses an Excel-first workflow:
-- CSV / Excel input files
-- Python optimization logic
-- Excel control workbook
-- Excel result workbooks with report sheets
+The old Excel control workbook UI has been retired. The historical workbook is archived under:
 
-## 中文快速开始
+```text
+Archive\legacy_excel_control_panel\Capacity_Optimizer_Control.xlsx
+```
 
-### 1. 安装依赖
+It is kept only for legacy reference and compatibility testing. Business users should not open it to run the tool.
 
-```bash
+## Quick Start
+
+### Source Mode
+
+```powershell
 runtime\setup_requirements.bat
+python CapacityOptimizerLauncher.pyw
 ```
 
-### 2. 生成机器指纹并申请授权
+In the launcher:
 
-如果你准备发的是正式机绑版，新电脑第一次使用前先运行：
+1. Click `Initialize Workspace`.
+2. Put `license.json` under `licenses\active\license.json`.
+3. Set run parameters directly in the launcher.
+4. Click `Save Settings`.
+5. Click `Run Optimizer`.
+6. Open `Output Folder` or `Log Folder` from the launcher.
 
-```bash
-runtime\get_machine_fingerprint.bat
-```
+### Packaged Mode
 
-它会在 `licenses\requests\` 下生成带时间戳的文件：
+Open:
 
 ```text
-machine_fingerprint_<MachineLabel>_YYYYMMDD_HHMMSS.json
+dist\CapacityOptimizer\CapacityOptimizer.exe
 ```
 
-把这个文件发给 `RSCP`，拿到签名后的：
+The launcher creates and uses a user workspace, typically:
 
 ```text
-license.json
+%LOCALAPPDATA%\CapacityOptimizer
 ```
 
-然后把 `license.json` 放到推荐位置：
+## Main Files
 
 ```text
-licenses\active\license.json
+CapacityOptimizerLauncher.pyw
+ProductAnalysisLauncher.pyw
+WorkCenterAnalysisLauncher.pyw
+Data_Input\
+docs\
+runtime\
+packaging\
+app\
+tests\
+Archive\legacy_excel_control_panel\
 ```
 
-兼容说明：
+## Release / Maintenance
 
-- 旧版本仍可读取项目根目录下的 `license.json`
-- 但当前推荐统一使用 `licenses\active\license.json`
+Set up development dependencies:
 
-如果你准备发的是短期试用版，也可以跳过机器指纹这一步，直接由 `RSCP` 签发一个：
-
-- `trial`
-- `unbound`
-
-的 `license.json`，然后直接放到 `licenses\active\license.json`。
-
-### 3. 生成或刷新控制工作簿
-
-```bash
-python -m app.create_template
+```powershell
+.\scripts\bootstrap_dev.ps1
 ```
 
-生成文件：
+Run preflight:
 
-```text
-Tooling Control Panel/Capacity_Optimizer_Control.xlsx
+```powershell
+.\scripts\release_preflight.ps1
 ```
 
-### 4. 在 Excel 里填写控制参数
+Run tests:
 
-打开 [Capacity_Optimizer_Control.xlsx](/C:/Users/super/capacity_optimizer/Tooling%20Control%20Panel/Capacity_Optimizer_Control.xlsx)，在 `Control_Panel` sheet 填写：
-
-- `Project_Root_Folder`
-- `Input_Load_Folder`
-- `Input_Master_Folder`
-- `Output_Folder`
-- `Output_FileName`
-- `Scenario_Name`
-- `Start_Year`
-- `Start_Month_Num`
-- `Horizon_Months`
-- `Run_Mode`
-- `Verbose`
-- `Skip_Validation_Errors`
-
-建议默认保持：
-
-- `Project_Root_Folder = ..`
-- `Input_Load_Folder = Data_Input`
-- `Input_Master_Folder = Data_Input`
-- `Output_Folder = output`
-
-### 5. 运行工具
-
-命令行方式：
-
-```bash
-python -m app.main --input-template "Tooling Control Panel/Capacity_Optimizer_Control.xlsx"
+```powershell
+python -m pytest
 ```
 
-也可以直接双击：
+Build the main executable:
 
-[`run_optimizer.bat`](/C:/Users/super/capacity_optimizer/runtime/run_optimizer.bat)
-
-它会按 `Tooling Control Panel/Capacity_Optimizer_Control.xlsx` 运行，并在成功后打开 `output/` 文件夹。
-
-## English Quick Start
-
-```bash
-runtime\setup_requirements.bat
-runtime\get_machine_fingerprint.bat
-python -m app.create_template
-python -m app.main --input-template "Tooling Control Panel/Capacity_Optimizer_Control.xlsx"
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging\build_onefolder.ps1 -Target CapacityOptimizer -Clean -CreateZip
 ```
 
-Before running, place a valid `license.json` in `licenses\active\license.json` and edit the `Control_Panel` sheet in `Tooling Control Panel/Capacity_Optimizer_Control.xlsx`.
-
-## Desktop Launcher
-
-For a lighter customer-facing desktop workflow, use:
-
-- [CapacityOptimizerLauncher.pyw](/C:/Users/super/capacity_optimizer/CapacityOptimizerLauncher.pyw)
-
-This launcher can:
-
-- initialize the local user workspace
-- create or open the control workbook
-- run the optimizer without typing `python -m ...`
-- open the output folder
-- open the log folder
-- keep customer-editable workbook, data, logs, and licenses in a separate user workspace
-
-More detail:
-
-- [ProductAnalysisLauncher.pyw](/C:/Users/super/capacity_optimizer/ProductAnalysisLauncher.pyw)
-- [WorkCenterAnalysisLauncher.pyw](/C:/Users/super/capacity_optimizer/WorkCenterAnalysisLauncher.pyw)
-
-Historical handoff, planning, and prior release documents have been moved under:
-
-- [docs/archive/README.md](/C:/Users/super/capacity_optimizer/docs/archive/README.md)
-
-## License Workflow
-
-### Trial / Unbound
-
-- RSCP generates a short-term unbound `license.json`
-- Copy `license.json` into `licenses\active\license.json`
-- Run the optimizer
-
-### Machine-Locked
-
-- Run `runtime\get_machine_fingerprint.bat` on the target computer
-- Send the generated file from `licenses\requests\` to `RSCP`
-- Receive the signed `license.json`
-- Copy `license.json` into `licenses\active\license.json`
-- Run the optimizer
-
-The optimizer stops immediately when:
-
-- both `licenses\active\license.json` and the legacy project-root `license.json` are missing
-- the license signature is invalid
-- the license has expired
-- the machine fingerprint does not match the licensed computer
-
-## Planning Modes
-
-### ModeA
-
-- Input: planner files + `master_capacity`
-- No routing table is used
-- Focus: internal allocation and residual unmet demand
-
-### ModeB
-
-- Input: planner files + `master_capacity` + routing master
-- Routing file: `alternative_routing` or legacy `master_routing`
-- Supports `Primary`, `Alternative`, and `Toller` logic
-- Focus: internal allocation, outsourcing, and residual unmet demand
-
-### Both
-
-- Runs `ModeA` and `ModeB` in sequence
-- Writes one Excel result workbook per mode
-- Also writes a standalone comparison workbook with timestamp naming, for example: `Summary of Mode A and Mode B_20260327_144454.xlsx`
-
-## Input Files
-
-### Planner Files
-
-Expected file names:
-
-- `planner1_load`
-- `planner2_load`
-- `planner3_load`
-- `planner4_load`
-- `planner5_load`
-- `planner6_load`
-
-Supported extensions:
-
-- `.csv`
-- `.xlsx`
-- `.xls`
-
-Required columns:
-
-- `Month`
-- `PlannerName`
-- `Product`
-- `ProductFamily`
-- `Plant`
-- `Forecast_Tons`
-
-Optional columns:
-
-- `Scenario`
-- `ResourceGroupOwner`
-- `ScenarioVersion`
-- `Comment`
-
-### Capacity Master
-
-Required columns:
-
-- `Product`
-- `WorkCenter`
-- `Annual_Max_Capacity_Tons`
-- `Annual_Planned_Capacity_Tons`
-- `Utilization_Target`
-
-Optional columns:
-
-- `Effective_From`
-- `Effective_To`
-
-### Routing Master
-
-Used in `ModeB` only.
-
-Columns:
-
-- `Product` or `ProductFamily`
-- `WorkCenter`
-- `Priority`
-- `EligibleFlag`
-- `RouteType`
-- `PenaltyWeight`
-
-## Output Workbook
-
-Each run writes a timestamped Excel workbook to the configured output folder.
-
-When `Run_Mode = Both`, the tool also writes:
-
-- `Summary of Mode A and Mode B_YYYYMMDD_HHMMSS.xlsx`
-
-Report sheets:
-
-- `Dashboard`
-- `Monthly_Trend`
-- `Bottleneck`
-- `WC_Heatmap`
-- `Product_Risk`
-
-Raw / audit sheets:
-
-- `Allocation_Detail`
-- `Allocation_Summary`
-- `Outsource_Summary`
-- `Unmet_Summary`
-- `WC_Load_Pct`
-- `Binary_Feasibility`
-- `Validation_Issues`
-- `Run_Info`
-
-Comparison workbook sheets:
-
-- `Executive_Comparison`
-- `Monthly_Trend_Compare`
-- `Bottleneck_Compare`
-- `WC_Heatmap_Compare`
-- `Product_Risk_Compare`
-- `Planner_Compare`
-- `Run_Info`
-
-## Control Workbook
-
-The control workbook is the user interaction surface for this tool.
-
-Main file:
-
-- [Capacity_Optimizer_Control.xlsx](/C:/Users/super/capacity_optimizer/Tooling%20Control%20Panel/Capacity_Optimizer_Control.xlsx)
-
-Generator:
-
-- [create_template.py](/C:/Users/super/capacity_optimizer/app/create_template.py)
-
-Runner:
-
-- [main.py](/C:/Users/super/capacity_optimizer/app/main.py)
-
-License helper:
-
-- [get_machine_fingerprint.bat](/C:/Users/super/capacity_optimizer/runtime/get_machine_fingerprint.bat)
-
-Internal signing helpers:
-
-- [generate_license.py](/C:/Users/super/capacity_optimizer/license_admin/license_tools/generate_license.py)
-- [generate_trial_license.py](/C:/Users/super/capacity_optimizer/license_admin/license_tools/generate_trial_license.py)
-- [open_license_generator.bat](/C:/Users/super/capacity_optimizer/license_admin/open_license_generator.bat)
-- [license_generator_ui.py](/C:/Users/super/capacity_optimizer/license_admin/license_tools/license_generator_ui.py)
-- [license_tools README](/C:/Users/super/capacity_optimizer/license_admin/license_tools/README.md)
-
-License operation guides:
-
-- [客户授权使用说明](/C:/Users/super/capacity_optimizer/docs/CUSTOMER_LICENSE_QUICKSTART_CN.md)
-- [内部 License 发放 SOP](/C:/Users/super/capacity_optimizer/docs/INTERNAL_LICENSE_SOP_CN.md)
-- [客户交付包导出 SOP](/C:/Users/super/capacity_optimizer/docs/DELIVERY_PACKAGE_SOP_CN.md)
-
-## Repository Structure
-
-```text
-.
-|-- Data_Input/
-|-- Tooling Control Panel/
-|   `-- Capacity_Optimizer_Control.xlsx
-|-- output/
-|-- licenses/
-|   |-- active/
-|   `-- requests/
-|-- app/
-|   |-- main.py
-|   |-- data_loader.py
-|   |-- optimizer.py
-|   |-- validator.py
-|   |-- output_writer.py
-|   |-- result_analysis.py
-|   |-- create_template.py
-|   |-- create_sample_data.py
-|   |-- license_validator.py
-|   `-- machine_fingerprint.py
-|-- runtime/
-|   |-- setup_requirements.bat
-|   |-- get_machine_fingerprint.bat
-|   `-- run_optimizer.bat
-|-- docs/
-|   |-- CHANGELOG.md
-|   |-- CUSTOMER_LICENSE_QUICKSTART_CN.md
-|   |-- INTERNAL_LICENSE_SOP_CN.md
-|   `-- IT_DEPLOYMENT_CHECKLIST_CN.md
-|-- license_admin/
-|   |-- open_license_generator.bat
-|   |-- license_tools/
-|   `-- private_keys/
-|-- tests/
-|   `-- test_regressions.py
-|-- README.md
-|-- requirements.txt
-`-- LICENSE
-```
-
-## Sample Data
-
-The repository includes demonstration input data under:
-
-- [Data_Input](/C:/Users/super/capacity_optimizer/Data_Input)
-
-You can regenerate the sample data with:
-
-```bash
-python -m app.create_sample_data
-```
-
-Data dictionary:
-
-- [DATA_INPUT_GUIDE_CN.md](/C:/Users/super/capacity_optimizer/Data_Input/DATA_INPUT_GUIDE_CN.md)
-
-## Tests
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-## IT Deployment
-
-For Windows workstation / shared-folder deployment, use:
-
-- [IT_DEPLOYMENT_CHECKLIST_CN.md](/C:/Users/super/capacity_optimizer/docs/IT_DEPLOYMENT_CHECKLIST_CN.md)
-
-## Internal Delivery Packaging
-
-Internal export helper:
-
-- [export_customer_package.py](/C:/Users/super/capacity_optimizer/license_admin/export_customer_package.py)
-- [open_delivery_exporter.bat](/C:/Users/super/capacity_optimizer/license_admin/open_delivery_exporter.bat)
-- [delivery_exporter_ui.py](/C:/Users/super/capacity_optimizer/license_admin/delivery_exporter_ui.py)
-
-Example:
-
-```bash
-python license_admin\export_customer_package.py --customer-name "DuPont" --overwrite
-```
-
-GUI entry:
-
-```bash
-license_admin\open_delivery_exporter.bat
-```
-
-## Documentation Hub
-
-Core guides for Milestone 10:
-
-- [User Guide](/C:/Users/super/capacity_optimizer/docs/user_guide.md)
-- [Developer Guide](/C:/Users/super/capacity_optimizer/docs/developer_guide.md)
-
-Packaging and deployment references:
-
-- [PyInstaller One-Folder Build](/C:/Users/super/capacity_optimizer/docs/pyinstaller_onefolder_build.md)
-- [Installer Preparation (Archived)](/C:/Users/super/capacity_optimizer/docs/archive/planning/installer_prep.md)
-- [Runtime Directory Strategy](/C:/Users/super/capacity_optimizer/docs/runtime_directory_strategy.md)
-- [Desktop Launcher Usage](/C:/Users/super/capacity_optimizer/docs/desktop_launcher_usage.md)
-- [IT Deployment Checklist (CN)](/C:/Users/super/capacity_optimizer/docs/IT_DEPLOYMENT_CHECKLIST_CN.md)
-
-## Changelog
-
-- [CHANGELOG.md](/C:/Users/super/capacity_optimizer/docs/CHANGELOG.md)
-
-## User Manual
-
-- [Capacity_Optimizer_User_Manual_CN.docx](/C:/Users/super/capacity_optimizer/Capacity_Optimizer_User_Manual_CN.docx)
-
-## License
-
-MIT. See [LICENSE](/C:/Users/super/capacity_optimizer/LICENSE).
-
-## Packaging Path Strategy
-
-For the Windows desktop packaging plan and the runtime directory strategy, see:
-
-- [Packaging Implementation Plan (Archived)](/C:/Users/super/capacity_optimizer/docs/archive/planning/implementation_plan_packaging.md)
-- [Runtime Directory Strategy](/C:/Users/super/capacity_optimizer/docs/runtime_directory_strategy.md)
+## Documentation
+
+- `docs\user_guide.md`
+- `docs\desktop_launcher_usage.md`
+- `docs\developer_guide.md`
+- `docs\pyinstaller_onefolder_build.md`
+- `docs\Capacity_Optimizer_v2.2.1_User_Guide_CN.docx`

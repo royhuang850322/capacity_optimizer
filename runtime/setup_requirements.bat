@@ -70,7 +70,7 @@ echo Next step:
 echo 1. If RSCP already provided a trial or unbound license, place license.json in licenses\active\
 echo 2. Otherwise run runtime\get_machine_fingerprint.bat to create a request file under licenses\requests\
 echo 3. Send that file to RSCP and place the returned license.json in licenses\active\
-echo 4. Open Tooling Control Panel\Capacity_Optimizer_Control.xlsx and run the tool
+echo 4. Open CapacityOptimizerLauncher.pyw and run the tool from the desktop launcher
 goto :end
 
 :fail

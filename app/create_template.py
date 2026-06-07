@@ -1,5 +1,8 @@
 """
-Create the Excel control workbook used by the Capacity Optimizer.
+Create the legacy Excel control workbook used by regression/support workflows.
+
+The customer-facing UI is the desktop launcher. This module remains available
+for legacy workbook compatibility only.
 """
 from __future__ import annotations
 
@@ -30,7 +33,7 @@ BTN_FONT = Font(color="FFFFFF", bold=True, size=11)
 THIN = Side(style="thin", color="B0B0B0")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
-DEFAULT_PROJECT_ROOT = ".."
+DEFAULT_PROJECT_ROOT = "../.."
 RUNTIME_PATHS = resolve_runtime_paths()
 DEFAULT_LOAD_DIR = str(RUNTIME_PATHS.workspace_input_dir)
 DEFAULT_OUT = str(RUNTIME_PATHS.control_workbook_path)
@@ -289,8 +292,8 @@ def _create_deployment_steps(worksheet) -> None:
 
     worksheet.merge_cells("A2:D2")
     worksheet["A2"] = (
-        "Recommended portable setup: keep Capacity_Optimizer_Control.xlsx inside 'Tooling Control Panel', "
-        "then use Project_Root_Folder = '..', Input_Load_Folder = 'Data_Input', "
+        "Legacy workbook setup: keep Capacity_Optimizer_Control.xlsx inside 'Archive/legacy_excel_control_panel', "
+        "then use Project_Root_Folder = '../..', Input_Load_Folder = 'Data_Input', "
         "Input_Master_Folder = 'Data_Input', Output_Folder = 'output', and place 'license.json' in 'licenses\\active\\'. "
         "中文说明见右侧列。"
     )
@@ -340,15 +343,15 @@ def _create_deployment_steps(worksheet) -> None:
         ),
         (
             "Step 7",
-            "Open the control workbook",
-            "Open 'Tooling Control Panel\\Capacity_Optimizer_Control.xlsx'. Save the workbook after any edits, then go to the 'Control_Panel' sheet after reading this page.",
-            "打开 `Tooling Control Panel\\Capacity_Optimizer_Control.xlsx`。每次修改后先保存，再切换到 `Control_Panel`。",
+            "Open the legacy workbook only when needed",
+            "Open 'Archive\\legacy_excel_control_panel\\Capacity_Optimizer_Control.xlsx' only for legacy workbook regression/support workflows. Current users should use the desktop launcher.",
+            "仅在 legacy workbook 回归或支持场景中打开 `Archive\\legacy_excel_control_panel\\Capacity_Optimizer_Control.xlsx`。当前业务用户应使用桌面启动器。",
         ),
         (
             "Step 8",
             "Check migration settings",
-            "In Control_Panel, first check Project_Root_Folder, Input_Load_Folder, Input_Master_Folder, and Output_Folder. If the workbook stays in 'Tooling Control Panel', keep '..', 'Data_Input', 'Data_Input', and 'output'.",
-            "先检查 `Project_Root_Folder`、`Input_Load_Folder`、`Input_Master_Folder`、`Output_Folder`。如果 workbook 仍然放在 `Tooling Control Panel` 目录中，默认保持 `.. / Data_Input / Data_Input / output` 即可。",
+            "In Control_Panel, first check Project_Root_Folder, Input_Load_Folder, Input_Master_Folder, and Output_Folder. If the workbook stays in 'Archive/legacy_excel_control_panel', keep '../..', 'Data_Input', 'Data_Input', and 'output'.",
+            "先检查 `Project_Root_Folder`、`Input_Load_Folder`、`Input_Master_Folder`、`Output_Folder`。如果 workbook 位于 `Archive/legacy_excel_control_panel`，默认保持 `../.. / Data_Input / Data_Input / output` 即可。",
         ),
         (
             "Step 9",
@@ -359,8 +362,8 @@ def _create_deployment_steps(worksheet) -> None:
         (
             "Step 10",
             "Run the tool",
-            "Press Ctrl+S to save first. Then click 'Run Optimizer' in Control_Panel, or run: python -m app.main --input-template \"Tooling Control Panel/Capacity_Optimizer_Control.xlsx\". If required packages or license files are missing, the run batch file will stop and tell you what to do next.",
-            "先按 `Ctrl+S` 保存，再在 `Control_Panel` 点击 `Run Optimizer`，或者在命令行运行：`python -m app.main --input-template \"Tooling Control Panel/Capacity_Optimizer_Control.xlsx\"`。如果依赖或授权文件缺失，运行批处理会先停止并明确告诉你下一步该做什么。",
+            "Press Ctrl+S to save first. Then run: python -m app.main --input-template \"Archive/legacy_excel_control_panel/Capacity_Optimizer_Control.xlsx\". Current users should use the desktop launcher instead.",
+            "先按 `Ctrl+S` 保存，再运行：`python -m app.main --input-template \"Archive/legacy_excel_control_panel/Capacity_Optimizer_Control.xlsx\"`。当前业务用户应使用桌面启动器。",
         ),
         (
             "Step 11",
@@ -392,7 +395,7 @@ def _create_deployment_steps(worksheet) -> None:
 
     footer_row = 5 + len(steps) + 2
     worksheet.merge_cells(f"A{footer_row}:D{footer_row}")
-    worksheet[f"A{footer_row}"] = "Where to continue: open the 'Control_Panel' sheet and start with the Migration Setup section."
+    worksheet[f"A{footer_row}"] = "Where to continue: open the 'Control_Panel' sheet only for legacy workbook compatibility testing."
     worksheet[f"A{footer_row}"].font = Font(color="1F4E79", bold=True, size=10)
     worksheet[f"A{footer_row}"].fill = SUBHDR_FILL
     worksheet[f"A{footer_row}"].alignment = Alignment(horizontal="left", vertical="center")
@@ -409,14 +412,14 @@ def _create_instructions(worksheet) -> None:
         ("2. For a short trial, ask RSCP for an unbound trial license and place it in licenses\\active\\license.json.", False),
         ("3. For a machine-locked license, run runtime\\get_machine_fingerprint.bat and send the file from licenses\\requests\\ to RSCP.", False),
         ("4. Place the signed license.json in licenses\\active\\license.json.", False),
-        ("5. Fill in the Control_Panel sheet.", False),
+        ("5. Fill in the Control_Panel sheet only for legacy workbook testing.", False),
         ("6. Planner and master data stay in CSV/Excel files on disk; the Python tool reads them directly.", False),
-        ("7. Run: python -m app.main --input-template \"Tooling Control Panel/Capacity_Optimizer_Control.xlsx\"", False),
-        ("   Or click the Run button inside Control_Panel.", False),
+        ("7. Run: python -m app.main --input-template \"Archive/legacy_excel_control_panel/Capacity_Optimizer_Control.xlsx\"", False),
+        ("   Current business users should use CapacityOptimizerLauncher.pyw or CapacityOptimizer.exe instead.", False),
         ("8. The tool writes one Excel result workbook per mode, with dashboard/report sheets included.", False),
         ("", False),
         ("KEY SETTINGS", True),
-        ("Project_Root_Folder: main project folder. Keep '..' when the workbook stays inside Tooling Control Panel.", False),
+        ("Project_Root_Folder: main project folder. Keep '../..' when the workbook stays inside Archive/legacy_excel_control_panel.", False),
         ("Input_Load_Folder: planner folder name or path. Relative values are resolved from Project_Root_Folder.", False),
         ("Input_Master_Folder: master-data folder name or path. Relative values are resolved from Project_Root_Folder.", False),
         ("Output_Folder: output folder name or path. Relative values are resolved from Project_Root_Folder.", False),
@@ -556,7 +559,7 @@ def _create_control_panel(worksheet, lists_ws, scenario_options: list[str]) -> N
     worksheet.freeze_panes = "B4"
     worksheet[f"A{current_row + 1}"] = "Run command"
     worksheet[f"A{current_row + 1}"].font = Font(bold=True, color="1F4E79", size=11)
-    worksheet[f"B{current_row + 1}"] = 'python -m app.main --input-template "Tooling Control Panel/Capacity_Optimizer_Control.xlsx"'
+    worksheet[f"B{current_row + 1}"] = 'python -m app.main --input-template "Archive/legacy_excel_control_panel/Capacity_Optimizer_Control.xlsx"'
     worksheet[f"B{current_row + 1}"].alignment = Alignment(wrap_text=True)
 
     worksheet[f"A{current_row + 3}"] = "Quick actions"
@@ -595,7 +598,7 @@ def _create_control_panel(worksheet, lists_ws, scenario_options: list[str]) -> N
         "On a new computer, click Setup Dependencies first. If RSCP gave you a trial/unbound license, "
         "place license.json in licenses\\active and continue. Otherwise click Get Machine Fingerprint, "
         "send the generated file from licenses\\requests to RSCP, place the returned license.json in licenses\\active, "
-        "save the workbook (Ctrl+S), and click Run Optimizer."
+        "save the workbook (Ctrl+S), and run the legacy workbook CLI only when needed."
     )
     worksheet[f"B{current_row + 15}"].alignment = Alignment(wrap_text=True)
 

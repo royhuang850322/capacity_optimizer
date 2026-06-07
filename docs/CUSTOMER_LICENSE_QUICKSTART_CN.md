@@ -1,285 +1,56 @@
 # Chemical Capacity Optimizer - 客户授权使用说明
 
-本文档给客户使用。目标是让客户从拿到工具开始，可以一步一步完成：
+本文面向业务用户，说明如何在当前桌面启动器流程下放置授权、生成机器指纹并运行工具。
 
-1. 试用版运行
-2. 正式版切换
-3. 续期
-4. 换电脑后重新授权
+## 1. 当前入口
 
----
-
-## 1. 你会收到什么
-
-通常你会从 RSCP 收到：
-
-- 完整工具文件夹
-- 一个 `license.json`
-
-有两种情况：
-
-1. 试用版
-   - RSCP 直接提供 `license.json`
-   - 不需要先提供机器信息
-
-2. 正式版
-   - 需要先生成本机机器指纹
-   - 再由 RSCP 提供 `license.json`
-
----
-
-## 2. 第一次在新电脑上使用工具
-
-### Step 1：复制整个工具文件夹
-
-把整个 `capacity_optimizer` 文件夹复制到你的电脑，例如：
+当前 UI 是桌面启动器：
 
 ```text
-D:\capacity_optimizer
+CapacityOptimizer.exe
 ```
 
-不要只复制 Excel 文件。
-
-### Step 2：安装依赖
-
-双击：
+源码模式可以打开：
 
 ```text
-runtime\setup_requirements.bat
+CapacityOptimizerLauncher.pyw
 ```
 
-等待安装完成。
+旧的 `Tooling Control Panel\Capacity_Optimizer_Control.xlsx` 已归档，不再作为客户运行入口。
 
-### Step 3：放置授权文件
+## 2. 第一次使用
 
-把 RSCP 提供的：
+1. 将完整工具目录复制到本地磁盘。
+2. 如果是源码模式，双击 `runtime\setup_requirements.bat` 安装依赖。
+3. 打开 `CapacityOptimizerLauncher.pyw` 或打包后的 `CapacityOptimizer.exe`。
+4. 点击 `Initialize Workspace`。
+5. 将授权文件放到 `licenses\active\license.json`。
+6. 在启动器中设置运行参数并点击 `Save Settings`。
+7. 点击 `Run Optimizer`。
 
-```text
-license.json
-```
+## 3. 试用授权
 
-放到推荐位置：
+如果 RSCP 提供的是 `trial` 或 `unbound` 授权，通常不需要先生成机器指纹。直接把 `license.json` 放到：
 
 ```text
 licenses\active\license.json
 ```
 
-例如：
+然后通过启动器运行。
 
-```text
-D:\capacity_optimizer\licenses\active\license.json
-```
+## 4. 正式机绑授权
 
-兼容说明：
+如果需要机器绑定授权：
 
-- 旧版本仍可读取项目根目录下的 `license.json`
-- 但后续建议统一使用 `licenses\active\license.json`
+1. 在启动器中点击 `Generate Machine Fingerprint`，或运行 `runtime\get_machine_fingerprint.bat`。
+2. 从 `licenses\requests\` 中取最新的 `machine_fingerprint_*.json` 发给 RSCP。
+3. 收到签名后的 `license.json`。
+4. 将它放到 `licenses\active\license.json`。
+5. 重新打开启动器并运行。
 
-### Step 4：打开控制工作簿
+## 5. 常见问题
 
-打开：
-
-```text
-Tooling Control Panel\Capacity_Optimizer_Control.xlsx
-```
-
-在 `Control_Panel` 里检查路径设置。推荐默认值：
-
-- `Project_Root_Folder = ..`
-- `Input_Load_Folder = Data_Input`
-- `Input_Master_Folder = Data_Input`
-- `Output_Folder = output`
-
-### Step 5：保存后运行
-
-先按 `Ctrl+S` 保存，再双击：
-
-```text
-runtime\run_optimizer.bat
-```
-
-成功后，工具会自动打开 `output` 文件夹。
-
----
-
-## 3. 试用版怎么运行
-
-如果 RSCP 提供的是试用版：
-
-- 授权类型通常是 `trial`
-- 绑定方式通常是 `unbound`
-
-这表示：
-
-- 你不需要先生成机器指纹
-- 只要授权文件放在 `licenses\active\license.json`，就可以直接运行
-
-试用版的操作步骤就是：
-
-1. 复制工具文件夹
-2. 运行 `runtime\setup_requirements.bat`
-3. 放入 RSCP 提供的 `license.json`
-4. 打开控制工作簿
-5. 保存后运行 `runtime\run_optimizer.bat`
-
----
-
-## 4. 正式版怎么运行
-
-如果 RSCP 要求提供机器信息，说明你使用的是正式版授权。
-
-### Step 1：生成机器指纹
-
-双击：
-
-```text
-runtime\get_machine_fingerprint.bat
-```
-
-运行后会在下面目录生成一个带时间戳的文件：
-
-```text
-licenses\requests\
-```
-
-文件名类似：
-
-```text
-machine_fingerprint_DUPONT-PC01_20260330_101500.json
-```
-
-### Step 2：把机器指纹发给 RSCP
-
-把 `licenses\requests\` 里最新生成的那个文件发给 RSCP。
-
-### Step 3：接收正式版授权文件
-
-RSCP 会返回正式版：
-
-```text
-license.json
-```
-
-### Step 4：放到有效授权目录
-
-把新的 `license.json` 放到：
-
-```text
-licenses\active\license.json
-```
-
-然后运行：
-
-```text
-runtime\run_optimizer.bat
-```
-
----
-
-## 5. 试用版升级成正式版
-
-如果你已经在使用试用版，后面转正式版时，不需要重新安装工具。
-
-只需要：
-
-1. 运行 `runtime\get_machine_fingerprint.bat`
-2. 把 `licenses\requests\` 里生成的机器指纹文件发给 RSCP
-3. 收到新的正式版 `license.json`
-4. 用新的 `license.json` 覆盖 `licenses\active\license.json`
-5. 重新运行工具
-
----
-
-## 6. 后续续期怎么做
-
-如果只是授权到期，但电脑没有变：
-
-1. 向 RSCP 申请新的 `license.json`
-2. 用新的 `license.json` 覆盖 `licenses\active\license.json`
-3. 重新运行工具
-
-一般情况下：
-
-- 不需要重新安装工具
-- 不需要重新安装依赖
-- 不需要重新生成机器指纹
-
----
-
-## 7. 换电脑怎么做
-
-如果你更换了电脑，正式版授权需要重新绑定新机器。
-
-在新电脑上：
-
-1. 复制整个工具文件夹
-2. 运行 `runtime\setup_requirements.bat`
-3. 运行 `runtime\get_machine_fingerprint.bat`
-4. 把新的 `licenses\requests\` 里的机器指纹文件发给 RSCP
-5. 收到新的 `license.json`
-6. 把新的 `license.json` 放到新电脑的 `licenses\active\license.json`
-7. 运行工具
-
-注意：
-
-- 旧电脑的正式授权文件通常不能直接用于新电脑
-
----
-
-## 8. 什么时候工具会停止运行
-
-如果出现下面任一情况，工具会停止：
-
-- `licenses\active\license.json` 和根目录 `license.json` 都不存在
-- `license.json` 被修改或无效
-- 授权已过期
-- 正式版授权绑定的机器与当前电脑不匹配
-
----
-
-## 9. 常见问题
-
-### 9.1 没有 `license.json`
-
-联系 RSCP 获取授权文件。  
-如果是正式版，请先运行：
-
-```text
-runtime\get_machine_fingerprint.bat
-```
-
-### 9.2 不知道 `license.json` 放哪里
-
-推荐放在：
-
-```text
-licenses\active\license.json
-```
-
-### 9.3 点了 `Run Optimizer` 不能运行
-
-先检查：
-
-- 是否已经运行过 `runtime\setup_requirements.bat`
-- `licenses\active\license.json` 或项目根目录里是否有有效授权
-- 控制工作簿是否已经保存
-
-### 9.4 输出文件没有生成
-
-检查：
-
-- `Output_Folder` 是否正确
-- 输入路径是否正确
-- 授权是否仍然有效
-
----
-
-## 10. 联系 RSCP 时建议提供的信息
-
-如果需要授权或排错，请提供：
-
-- 你的公司名称
-- 当前使用的是试用版还是正式版
-- `licenses\requests\` 里最新的机器指纹文件
-- 错误截图
-- 当前 `license.json` 的到期日期
+- 找不到授权：确认文件名必须是 `license.json`，并且位于 `licenses\active\`。
+- 授权过期：联系 RSCP 重新签发。
+- 机器不匹配：重新生成机器指纹并申请新授权。
+- 运行失败：从启动器打开 `Log Folder`，把最新日志发给支持人员。
