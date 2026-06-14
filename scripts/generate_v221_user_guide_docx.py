@@ -13,7 +13,7 @@ from docx.shared import Inches, Pt, RGBColor
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = REPO_ROOT / "docs" / "Capacity_Optimizer_v2.2.1_User_Guide_CN.docx"
+OUTPUT = REPO_ROOT / "docs" / "Capacity_Optimizer_v2.2.2_User_Guide_CN.docx"
 
 
 def set_run_font(run, *, size: float | None = None, bold: bool | None = None, color: str | None = None) -> None:
@@ -159,7 +159,7 @@ def build_document() -> None:
     set_run_font(r, size=22, bold=True, color="0B2545")
 
     subtitle = doc.add_paragraph()
-    r = subtitle.add_run("版本：v2.2.1 | 更新日期：2026-06-07 | 范围：桌面 GUI、ModeA、ModeB、Max/Planned 口径、Setup Time 计算与报告")
+    r = subtitle.add_run("版本：v2.2.2 | 更新日期：2026-06-14 | 范围：桌面 GUI、ModeA、ModeB、Max/Planned 口径、Setup Time 计算与报告")
     set_run_font(r, size=10.5, color="374151")
 
     add_note(
@@ -282,13 +282,13 @@ def build_document() -> None:
     )
 
     add_heading(doc, "6. Setup Time 计算逻辑", 1)
-    add_para(doc, "Setup time 代表同一工作中心从生产一个产品切换到生产另一个产品前需要消耗的准备时间。工具按“同月、同工作中心、同产品”聚合判断是否触发 setup。")
+    add_para(doc, "Setup time 代表同一工作中心从生产一个 ProductFamily 切换到另一个 ProductFamily 前需要消耗的准备时间。工具按“同月、同工厂、同工作中心、同 ProductFamily”聚合判断是否触发 setup。ProductFamily 以 planner 清单 D 列为准。")
     add_table(
         doc,
         ["规则", "说明"],
         [
-            ["触发条件", "当同一个 Month + WorkCenter + Product 的累计分配吨位大于 1 吨时，触发一次 setup。小于或等于 1 吨不触发。"],
-            ["同月只算一次", "同一月份、同一工作中心、同一产品即使来自多个 planner 或多条需求，只计算一次 setup。实际生产中通常会把同产品集中排产，因此该逻辑避免重复扣减。"],
+            ["触发条件", "当同一个 Month + Plant + WorkCenter + ProductFamily 有任何内部分配吨位时，触发一次 setup。不再保留小于或等于 1 吨不触发的规则。"],
+            ["同组只算一次", "同一月份、同一工厂、同一工作中心、同一 ProductFamily 即使包含多个产品或多条需求，只计算一次 setup。实际生产中通常会把同 ProductFamily 产品集中排产，因此该逻辑避免重复扣减。"],
             ["月小时数", "Month 对应自然月天数 × 24。例如 6 月为 30 × 24 = 720 小时。"],
             ["吨位换算", "Setup_Equivalent_Tons_By_Max = Setup_Hours × 当月 Max 吨/小时。"],
             ["当月 Max 吨/小时", "当月 Max 吨/小时 = 该产品在该工作中心的月度 Max Capacity ÷ 月小时数。"],
@@ -300,7 +300,7 @@ def build_document() -> None:
     add_note(
         doc,
         "例子",
-        "6 月工作中心 A 生产 aa、bb、cc。aa 分配 50 吨、bb 分配 30 吨、cc 分配 20 吨。原逻辑只看 100 吨产能是否够；v2.2.1 后，每个产品若分配吨位大于 1 吨，还会分别加上 aa、bb、cc 对应的 setup 等效吨。",
+        "6 月工厂 X 的工作中心 A 生产 aa、bb、cc。aa 和 bb 属于 ProductFamily F1，cc 属于 ProductFamily F2。只要 F1 在 A 上有内部分配，就触发一次 F1 的 setup；cc 属于不同 ProductFamily，因此若也在 A 上生产，会再触发一次 F2 的 setup。",
     )
 
     add_heading(doc, "7. 优化逻辑", 1)
@@ -333,7 +333,7 @@ def build_document() -> None:
     )
 
     add_heading(doc, "8. 报告排序逻辑", 1)
-    add_para(doc, "为了避免使用者误解同一个月、同一个工厂、同一个工作中心、同一个产品的 setup 为什么只计算一次，分配明细会把同口径内的相关行排在一起。")
+    add_para(doc, "为了避免使用者误解同一个月、同一个工厂、同一个工作中心、同一个 ProductFamily 的 setup 为什么只计算一次，分配明细会把同口径内的相关行排在一起。")
     add_table(
         doc,
         ["排序层级", "字段", "目的"],
@@ -342,7 +342,7 @@ def build_document() -> None:
             ["2", "Month", "同一月份集中展示。"],
             ["3", "Plant", "同一工厂集中展示。"],
             ["4", "WorkCenter", "同一工作中心集中展示。"],
-            ["5", "Product", "同一产品集中展示，便于理解同月只触发一次 setup。"],
+            ["5", "ProductFamily / Product", "同一 ProductFamily 及其产品集中展示，便于理解同组只触发一次 setup。"],
             ["6", "PlannerName", "同产品下按 planner 继续归类。"],
             ["7", "Source_Resource", "区分原始资源来源。"],
             ["8", "AllocationType / RouteType / Priority", "同组内按分配类型、路径类型和优先级稳定排序。"],
@@ -364,7 +364,7 @@ def build_document() -> None:
             ["WorkCenter", "最终分配工作中心。", "优化后实际承载该产品吨位的工作中心。"],
             ["Source_Resource", "来源工作中心或原始路径资源。", "用于区分主路径与替代路径来源。"],
             ["Allocation_Tons", "分配生产吨位。", "优化模型分配给该工作中心的产品需求吨位。"],
-            ["Setup_Applied", "是否触发 setup。", "当同月同工作中心同产品累计分配吨位大于 1 吨时为 True/Yes。"],
+            ["Setup_Applied", "是否触发 setup。", "当同月同工厂同工作中心同 ProductFamily 有任何内部分配吨位时为 True/Yes。"],
             ["Setup_Hours", "输入维护的换模小时数。", "来自 capacity 或 routing，经一致性校验后使用。"],
             ["Setup_Equivalent_Tons_By_Max", "setup 折算吨位。", "Setup_Hours × Max Capacity ÷ 月小时数。"],
             ["Capacity_Used_Tons", "实际占用产能吨位。", "Allocation_Tons + Setup_Equivalent_Tons_By_Max。"],
@@ -405,7 +405,7 @@ def build_document() -> None:
             ["Unmet_Tons", "未满足吨位。", "Demand_Tons - Allocated_Tons。"],
             ["Service_Level", "服务水平。", "Allocated_Tons ÷ Demand_Tons；需求为 0 时按报告逻辑显示为空或 100%。"],
             ["WorkCenter", "承载工作中心。", "显示该客户/案例产品最终使用的资源。"],
-            ["Setup 相关列", "换模小时和折算吨位。", "沿用同月同工作中心同产品只触发一次的逻辑。"],
+            ["Setup 相关列", "换模小时和折算吨位。", "沿用同月同工厂同工作中心同 ProductFamily 只触发一次的逻辑。"],
         ],
         [1.45, 2.15, 2.8],
     )
@@ -415,10 +415,10 @@ def build_document() -> None:
         doc,
         ["问题", "原因", "处理方式"],
         [
-            ["报告中某个产品 setup 为 0", "该 Product + WorkCenter 的 Setup_Hours 输入为 0，或该组累计分配吨位未超过 1 吨。", "检查 capacity/routing 的 Setup_Hours 和该月明细累计吨位。"],
-            ["同一个产品多行只有一行显示 setup", "工具按 Month + WorkCenter + Product 聚合，同月只触发一次 setup。", "这是预期逻辑；明细排序已把同组行排在一起便于解释。"],
+            ["报告中某个产品 setup 为 0", "该 ProductFamily + Plant + WorkCenter 的 setup 已经被同组另一行承担，或该组对应产品的 Setup_Hours 输入为 0。", "检查同月同工厂同工作中心同 ProductFamily 的所有明细行，以及 capacity/routing 的 Setup_Hours。"],
+            ["同一个 ProductFamily 多行只有一行显示 setup", "工具按 Month + Plant + WorkCenter + ProductFamily 聚合，同组只触发一次 setup。", "这是预期逻辑；明细排序已把同组行排在一起便于解释。"],
             ["工具停止并生成错误报告", "输入校验失败，例如 setup 为空、非数字、负数，或 capacity/routing 数值不一致。", "按错误报告列出的 Product + Resource 修正输入。"],
-            ["Planned 报告中 setup 折算看起来不是 Planned 速率", "v2.2.1 明确 setup 折算统一使用 Max Capacity。", "这是为了保证 Max 与 Planned 月份和工作中心不变时 setup 消耗保持一致。"],
+            ["Planned 报告中 setup 折算看起来不是 Planned 速率", "v2.2.2 明确 setup 折算统一使用 Max Capacity。", "这是为了保证 Max 与 Planned 月份和工作中心不变时 setup 消耗保持一致。"],
             ["Word 文档显示问号", "文档生成过程发生编码损坏。", "使用本脚本重新生成，确保 Python 源文件为 UTF-8，并用 python-docx 写入。"],
         ],
         [1.7, 2.25, 2.35],
@@ -441,7 +441,7 @@ def build_document() -> None:
 
     footer = section.footer.paragraphs[0]
     footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    fr = footer.add_run("Chemical Capacity Optimizer v2.2.1 操作指引")
+    fr = footer.add_run("Chemical Capacity Optimizer v2.2.2 操作指引")
     set_run_font(fr, size=8, color="6B7280")
 
     doc.save(OUTPUT)

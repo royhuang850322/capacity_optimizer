@@ -9,9 +9,19 @@ The format is based on a simple release log:
 
 ## [Unreleased]
 
-Launcher-first cleanup after v2.2.1.
+## [v2.2.2] - 2026-06-14
+
+ProductFamily setup grouping release with launcher cleanup, refreshed docs, and packaging metadata.
+
+### Added
+- Added the detailed `Capacity_Allocation_Logic_CN_V02.docx` generation source for the updated setup and allocation logic guide
 
 ### Changed
+- Setup triggering is now grouped by planner `ProductFamily`, plant, and workcenter, so products in the same family share one setup when assigned to the same plant/workcenter/month
+- Any positive internal allocation can trigger setup; the previous `>1 ton` exemption has been removed
+- ModeB now penalizes setup hours when evaluating alternative routing choices, while still prioritizing reducing setup triggers
+- Allocation detail reports now sort by ProductFamily before Product within each capacity basis, month, plant, and workcenter
+- Tool version string and packaged executable metadata updated to `v2.2.2`
 - Archived the retired Excel control workbook under `Archive/legacy_excel_control_panel`
 - Customer delivery package export no longer creates or ships `Tooling Control Panel/Capacity_Optimizer_Control.xlsx`
 - Source-mode `runtime/run_optimizer.bat` now starts the desktop launcher instead of the legacy workbook CLI
@@ -29,7 +39,7 @@ Setup-time capacity release with refreshed input data and reporting guidance.
 - Added a detailed Chinese Word operation guide for inputs, parameters, calculation logic, report sorting, and report-column meanings
 
 ### Changed
-- Capacity solving now consumes setup capacity when a month/product/workcenter allocation exceeds 1 ton
+- Capacity solving now consumes setup capacity when a month/plant/workcenter/product has allocated production above the setup trigger threshold
 - Setup equivalent tons are calculated from Max capacity and natural calendar month hours
 - Allocation detail reports now sort by capacity basis, month, plant, workcenter, product, planner, source resource, allocation type, route type, and priority
 - Sample input data now uses the consolidated `planner3_load.csv` source with archived legacy planner load files

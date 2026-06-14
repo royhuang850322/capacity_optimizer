@@ -23,8 +23,8 @@ from app.models import AllocationResult, CapacityRecord, LoadRecord, RoutingReco
 
 
 BIG_M = 1_000_000_000.0
-SETUP_TRIGGER_THRESHOLD_TONS = 1.0
 SETUP_TRIGGER_PENALTY = 1_000_000.0
+SETUP_HOURS_PENALTY = 1_000.0
 SETUP_TONS_PENALTY = 1.0
 TOLLER_PENALTY = 100_000.0
 ALTERNATIVE_PENALTY = 1_000.0
@@ -39,6 +39,11 @@ DemandMap = Dict[DemandKey, float]
 EffCapMap = Dict[Tuple[str, str], float]
 SetupShareMap = Dict[Tuple[str, str], float]
 SetupTonsMap = Dict[Tuple[str, str], float]
+SetupHoursMap = Dict[Tuple[str, str], float]
+SetupGroupKey = Tuple[str, str, str]  # product_family, plant, work_center
+SetupGroupShareMap = Dict[SetupGroupKey, float]
+SetupGroupTonsMap = Dict[SetupGroupKey, float]
+SetupGroupHoursMap = Dict[SetupGroupKey, float]
 NodeMetaMap = Dict[DemandKey, Tuple[str, str]]  # product_family, merged planner names
 EligibleRoute = Tuple[str, int, str, float]
 RouteMap = Dict[DemandKey, List[EligibleRoute]]
@@ -70,7 +75,7 @@ def run_optimization_mode_a(
     all_results: List[AllocationResult] = []
     for month in months:
         eff_cap = _build_eff_cap(capacities, month)
-        setup_share, setup_equiv_tons = _build_setup_maps(capacities, month)
+        setup_share, setup_equiv_tons, setup_hours = _build_setup_maps(capacities, month)
         eligible = {
             demand_key: _build_capacity_only_routes(demand_key, eff_cap)
             for demand_key in demand
@@ -86,6 +91,7 @@ def run_optimization_mode_a(
             eff_cap=eff_cap,
             setup_share=setup_share,
             setup_equiv_tons=setup_equiv_tons,
+            setup_hours=setup_hours,
             eligible=eligible,
             wc_limits={},
             verbose=verbose,
@@ -121,7 +127,7 @@ def run_optimization_mode_b(
 
         baseline_eff_cap = _build_eff_cap(baseline_capacities, month)
         routing_eff_cap = _build_eff_cap(routing_capacities, month)
-        routing_setup_share, routing_setup_equiv_tons = _build_setup_maps(routing_capacities, month)
+        routing_setup_share, routing_setup_equiv_tons, routing_setup_hours = _build_setup_maps(routing_capacities, month)
         month_results = _run_global_routing_lp_for_nodes(
             month=month,
             nodes=monthly_nodes,
@@ -132,6 +138,7 @@ def run_optimization_mode_b(
             routing_eff_cap=routing_eff_cap,
             setup_share=routing_setup_share,
             setup_equiv_tons=routing_setup_equiv_tons,
+            setup_hours=routing_setup_hours,
             routings=routings,
             verbose=verbose,
         )
@@ -199,6 +206,32 @@ def _build_demand(loads: List[LoadRecord]) -> Tuple[DemandMap, NodeMetaMap]:
     return demand, node_meta
 
 
+def _setup_group_key(
+    *,
+    product_family: str,
+    product: str,
+    plant: str,
+    work_center: str,
+) -> SetupGroupKey:
+    family = str(product_family or "").strip() or str(product or "").strip()
+    return (family, str(plant or "").strip(), str(work_center or "").strip())
+
+
+def _setup_group_key_for_demand(
+    demand_key: DemandKey,
+    work_center: str,
+    node_meta: NodeMetaMap,
+) -> SetupGroupKey:
+    _month, product, plant, _source_resource = demand_key
+    product_family, _planner_names = node_meta.get(demand_key, ("", ""))
+    return _setup_group_key(
+        product_family=product_family,
+        product=product,
+        plant=plant,
+        work_center=work_center,
+    )
+
+
 def _build_eff_cap(capacities: List[CapacityRecord], month: str | None = None) -> EffCapMap:
     if month:
         capacities = _select_effective_capacity_records(capacities, month)
@@ -211,10 +244,11 @@ def _build_eff_cap(capacities: List[CapacityRecord], month: str | None = None) -
 def _build_setup_maps(
     capacities: List[CapacityRecord],
     month: str,
-) -> Tuple[SetupShareMap, SetupTonsMap]:
+) -> Tuple[SetupShareMap, SetupTonsMap, SetupHoursMap]:
     month_hours = _month_hours(month)
     setup_share: SetupShareMap = {}
     setup_equiv_tons: SetupTonsMap = {}
+    setup_hours_map: SetupHoursMap = {}
     for record in _select_effective_capacity_records(capacities, month):
         setup_hours = float(record.setup_hours or 0.0)
         if setup_hours <= EPSILON:
@@ -222,7 +256,8 @@ def _build_setup_maps(
         key = (record.product, record.work_center)
         setup_share[key] = setup_hours / month_hours
         setup_equiv_tons[key] = setup_hours * record.setup_reference_monthly_capacity_tons / month_hours
-    return setup_share, setup_equiv_tons
+        setup_hours_map[key] = setup_hours
+    return setup_share, setup_equiv_tons, setup_hours_map
 
 
 def _month_hours(month: str) -> float:
@@ -393,6 +428,7 @@ def _run_global_routing_lp_for_nodes(
     routing_eff_cap: EffCapMap,
     setup_share: SetupShareMap,
     setup_equiv_tons: SetupTonsMap,
+    setup_hours: SetupHoursMap,
     routings: List[RoutingRecord],
     verbose: bool = False,
 ) -> List[AllocationResult]:
@@ -407,7 +443,10 @@ def _run_global_routing_lp_for_nodes(
     inf = solver.infinity()
 
     x: Dict[Tuple[DemandKey, str, str], pywraplp.Variable] = {}
-    setup_used: Dict[Tuple[str, str], pywraplp.Variable] = {}
+    setup_used: Dict[SetupGroupKey, pywraplp.Variable] = {}
+    setup_group_share: SetupGroupShareMap = {}
+    setup_group_equiv_tons: SetupGroupTonsMap = {}
+    setup_group_hours: SetupGroupHoursMap = {}
     outsource: Dict[DemandKey, pywraplp.Variable] = {}
     unmet: Dict[DemandKey, pywraplp.Variable] = {}
 
@@ -435,18 +474,25 @@ def _run_global_routing_lp_for_nodes(
             if variable is not None:
                 constraint.SetCoefficient(variable, 1.0)
 
-    product_wc_variables: Dict[Tuple[str, str], List[pywraplp.Variable]] = {}
+    setup_group_variables: Dict[SetupGroupKey, List[Tuple[pywraplp.Variable, str, str]]] = {}
     for (demand_key, wc, _allocation_source), variable in x.items():
-        product_wc_variables.setdefault((demand_key[1], wc), []).append(variable)
+        setup_key = _setup_group_key_for_demand(demand_key, wc, node_meta)
+        setup_group_variables.setdefault(setup_key, []).append((variable, demand_key[1], wc))
 
-    for (product, wc), variables in product_wc_variables.items():
-        if setup_share.get((product, wc), 0.0) <= EPSILON:
+    for setup_key, variables in setup_group_variables.items():
+        group_share = max((setup_share.get((product, wc), 0.0) for _variable, product, wc in variables), default=0.0)
+        if group_share <= EPSILON:
             continue
-        setup_name = abs(hash((month, product, wc)))
+        group_equiv_tons = max((setup_equiv_tons.get((product, wc), 0.0) for _variable, product, wc in variables), default=0.0)
+        group_hours = max((setup_hours.get((product, wc), 0.0) for _variable, product, wc in variables), default=0.0)
+        setup_group_share[setup_key] = group_share
+        setup_group_equiv_tons[setup_key] = group_equiv_tons
+        setup_group_hours[setup_key] = group_hours
+        setup_name = abs(hash((month, *setup_key)))
         setup_var = solver.IntVar(0.0, 1.0, f"setup_{setup_name}")
-        setup_used[(product, wc)] = setup_var
-        link = solver.Constraint(-inf, SETUP_TRIGGER_THRESHOLD_TONS, f"setup_link_{setup_name}")
-        for variable in variables:
+        setup_used[setup_key] = setup_var
+        link = solver.Constraint(-inf, 0.0, f"setup_link_{setup_name}")
+        for variable, _product, _wc in variables:
             link.SetCoefficient(variable, 1.0)
         link.SetCoefficient(setup_var, -sum(demand.values()))
 
@@ -460,9 +506,10 @@ def _run_global_routing_lp_for_nodes(
                 variable = x.get((demand_key, wc, allocation_source))
                 if variable is not None and cap > 0:
                     constraint.SetCoefficient(variable, 1.0 / cap)
-        for (product, setup_wc), setup_var in setup_used.items():
+        for setup_key, setup_var in setup_used.items():
+            _family, _plant, setup_wc = setup_key
             if setup_wc == wc:
-                constraint.SetCoefficient(setup_var, setup_share.get((product, wc), 0.0))
+                constraint.SetCoefficient(setup_var, setup_group_share.get(setup_key, 0.0))
 
     objective = solver.Objective()
     objective.SetMinimization()
@@ -473,7 +520,9 @@ def _run_global_routing_lp_for_nodes(
     for key, variable in setup_used.items():
         objective.SetCoefficient(
             variable,
-            SETUP_TRIGGER_PENALTY + setup_equiv_tons.get(key, 0.0) * SETUP_TONS_PENALTY,
+            SETUP_TRIGGER_PENALTY
+            + setup_group_hours.get(key, 0.0) * SETUP_HOURS_PENALTY
+            + setup_group_equiv_tons.get(key, 0.0) * SETUP_TONS_PENALTY,
         )
     for (demand_key, wc, allocation_source), variable in x.items():
         route = _find_global_route(demand_key, wc, allocation_source, routes)
@@ -532,9 +581,9 @@ def _run_global_routing_lp_for_nodes(
     _apply_setup_to_internal_results(
         internal_results,
         setup_used=setup_used,
-        setup_share=setup_share,
-        setup_equiv_tons=setup_equiv_tons,
-        eff_cap=routing_eff_cap,
+        setup_share=setup_group_share,
+        setup_equiv_tons=setup_group_equiv_tons,
+        setup_hours=setup_group_hours,
     )
 
     outsource_rows = _build_outsource_rows(final_outsourced, full_demand, node_meta)
@@ -662,16 +711,21 @@ def _global_route_objective_penalty(route_type: str, priority: int, penalty: flo
 def _apply_setup_to_internal_results(
     results: List[AllocationResult],
     *,
-    setup_used: Dict[Tuple[str, str], pywraplp.Variable],
-    setup_share: SetupShareMap,
-    setup_equiv_tons: SetupTonsMap,
-    eff_cap: EffCapMap,
+    setup_used: Dict[SetupGroupKey, pywraplp.Variable],
+    setup_share: SetupGroupShareMap,
+    setup_equiv_tons: SetupGroupTonsMap,
+    setup_hours: SetupGroupHoursMap,
 ) -> None:
-    applied: Set[Tuple[str, str]] = set()
+    applied: Set[SetupGroupKey] = set()
     for result in results:
         if result.allocation_type != "Internal":
             continue
-        key = (result.product, result.work_center)
+        key = _setup_group_key(
+            product_family=result.product_family,
+            product=result.product,
+            plant=result.plant,
+            work_center=result.work_center,
+        )
         result.capacity_used_tons = _report_number(result.allocated_tons)
         setup_var = setup_used.get(key)
         if setup_var is None or setup_var.solution_value() < 0.5 or key in applied:
@@ -679,11 +733,10 @@ def _apply_setup_to_internal_results(
         applied.add(key)
         setup_equiv = setup_equiv_tons.get(key, 0.0)
         result.setup_applied = True
-        result.setup_hours = _report_number(setup_share.get(key, 0.0) * _month_hours(result.month))
+        result.setup_hours = _report_number(setup_hours.get(key, 0.0))
         result.setup_equivalent_tons_by_max = _report_number(setup_equiv)
         result.capacity_used_tons = _report_number(result.allocated_tons + setup_equiv)
-        cap = eff_cap.get(key, 0.0)
-        if cap > EPSILON:
+        if setup_share.get(key, 0.0) > EPSILON:
             result.capacity_share_pct = _report_number(
                 float(result.capacity_share_pct or 0.0) + 100.0 * setup_share.get(key, 0.0)
             )
@@ -728,6 +781,7 @@ def _run_lp_for_nodes(
     eff_cap: EffCapMap,
     setup_share: SetupShareMap,
     setup_equiv_tons: SetupTonsMap,
+    setup_hours: SetupHoursMap,
     eligible: RouteMap,
     wc_limits: Dict[str, float],
     allocation_source: str = "",
@@ -742,7 +796,10 @@ def _run_lp_for_nodes(
     inf = solver.infinity()
 
     x: Dict[Tuple[DemandKey, str], pywraplp.Variable] = {}
-    setup_used: Dict[Tuple[str, str], pywraplp.Variable] = {}
+    setup_used: Dict[SetupGroupKey, pywraplp.Variable] = {}
+    setup_group_share: SetupGroupShareMap = {}
+    setup_group_equiv_tons: SetupGroupTonsMap = {}
+    setup_group_hours: SetupGroupHoursMap = {}
     unmet: Dict[DemandKey, pywraplp.Variable] = {}
 
     for demand_key in nodes:
@@ -762,18 +819,25 @@ def _run_lp_for_nodes(
             if (demand_key, wc) in x:
                 constraint.SetCoefficient(x[(demand_key, wc)], 1.0)
 
-    product_wc_variables: Dict[Tuple[str, str], List[pywraplp.Variable]] = {}
+    setup_group_variables: Dict[SetupGroupKey, List[Tuple[pywraplp.Variable, str, str]]] = {}
     for (demand_key, wc), variable in x.items():
-        product_wc_variables.setdefault((demand_key[1], wc), []).append(variable)
+        setup_key = _setup_group_key_for_demand(demand_key, wc, node_meta)
+        setup_group_variables.setdefault(setup_key, []).append((variable, demand_key[1], wc))
 
-    for (product, wc), variables in product_wc_variables.items():
-        if setup_share.get((product, wc), 0.0) <= EPSILON:
+    for setup_key, variables in setup_group_variables.items():
+        group_share = max((setup_share.get((product, wc), 0.0) for _variable, product, wc in variables), default=0.0)
+        if group_share <= EPSILON:
             continue
-        setup_name = abs(hash((month, product, wc)))
+        group_equiv_tons = max((setup_equiv_tons.get((product, wc), 0.0) for _variable, product, wc in variables), default=0.0)
+        group_hours = max((setup_hours.get((product, wc), 0.0) for _variable, product, wc in variables), default=0.0)
+        setup_group_share[setup_key] = group_share
+        setup_group_equiv_tons[setup_key] = group_equiv_tons
+        setup_group_hours[setup_key] = group_hours
+        setup_name = abs(hash((month, *setup_key)))
         setup_var = solver.IntVar(0.0, 1.0, f"setup_{setup_name}")
-        setup_used[(product, wc)] = setup_var
-        link = solver.Constraint(-inf, SETUP_TRIGGER_THRESHOLD_TONS, f"setup_link_{setup_name}")
-        for variable in variables:
+        setup_used[setup_key] = setup_var
+        link = solver.Constraint(-inf, 0.0, f"setup_link_{setup_name}")
+        for variable, _product, _wc in variables:
             link.SetCoefficient(variable, 1.0)
         link.SetCoefficient(setup_var, -sum(demand.values()))
 
@@ -791,9 +855,10 @@ def _run_lp_for_nodes(
             product = demand_key[1]
             if (demand_key, wc) in x:
                 constraint.SetCoefficient(x[(demand_key, wc)], 1.0 / eff_cap[(product, wc)])
-        for (product, setup_wc), setup_var in setup_used.items():
+        for setup_key, setup_var in setup_used.items():
+            _family, _plant, setup_wc = setup_key
             if setup_wc == wc:
-                constraint.SetCoefficient(setup_var, setup_share.get((product, wc), 0.0))
+                constraint.SetCoefficient(setup_var, setup_group_share.get(setup_key, 0.0))
 
     objective = solver.Objective()
     objective.SetMinimization()
@@ -802,7 +867,9 @@ def _run_lp_for_nodes(
     for key, variable in setup_used.items():
         objective.SetCoefficient(
             variable,
-            SETUP_TRIGGER_PENALTY + setup_equiv_tons.get(key, 0.0) * SETUP_TONS_PENALTY,
+            SETUP_TRIGGER_PENALTY
+            + setup_group_hours.get(key, 0.0) * SETUP_HOURS_PENALTY
+            + setup_group_equiv_tons.get(key, 0.0) * SETUP_TONS_PENALTY,
         )
     for (demand_key, wc), variable in x.items():
         penalty = _get_penalty(demand_key, wc, eligible)
@@ -857,9 +924,9 @@ def _run_lp_for_nodes(
     _apply_setup_to_internal_results(
         results,
         setup_used=setup_used,
-        setup_share=setup_share,
-        setup_equiv_tons=setup_equiv_tons,
-        eff_cap=eff_cap,
+        setup_share=setup_group_share,
+        setup_equiv_tons=setup_group_equiv_tons,
+        setup_hours=setup_group_hours,
     )
 
     if verbose:

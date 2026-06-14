@@ -6,7 +6,7 @@
 
 - `docs\user_guide.md`
 - `docs\desktop_launcher_usage.md`
-- `docs\Capacity_Optimizer_v2.2.1_User_Guide_CN.docx`
+- `docs\Capacity_Optimizer_v2.2.2_User_Guide_CN.docx`
 
 ## 快速流程
 

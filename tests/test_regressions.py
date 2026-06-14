@@ -266,7 +266,7 @@ class RegressionTests(unittest.TestCase):
         self.assertAlmostEqual(internal.capacity_used_tons, 100.0)
         self.assertAlmostEqual(unmet.unmet_tons, 5.0)
 
-    def test_mode_a_setup_does_not_trigger_at_one_ton(self):
+    def test_mode_a_setup_triggers_for_any_positive_allocation(self):
         loads = [
             LoadRecord(
                 month="2025-01",
@@ -284,7 +284,7 @@ class RegressionTests(unittest.TestCase):
                 work_center="WC1",
                 annual_capacity_tons=1200.0,
                 utilization_target=1.0,
-                setup_hours=744.0,
+                setup_hours=7.44,
                 setup_reference_annual_capacity_tons=1200.0,
             ),
         ]
@@ -293,8 +293,114 @@ class RegressionTests(unittest.TestCase):
 
         internal = [row for row in results if row.allocation_type == "Internal"][0]
         self.assertAlmostEqual(internal.allocated_tons, 1.0)
-        self.assertFalse(internal.setup_applied)
-        self.assertAlmostEqual(internal.setup_equivalent_tons_by_max, 0.0)
+        self.assertTrue(internal.setup_applied)
+        self.assertAlmostEqual(internal.setup_hours, 7.44)
+        self.assertAlmostEqual(internal.setup_equivalent_tons_by_max, 1.0)
+        self.assertAlmostEqual(internal.capacity_used_tons, 2.0)
+
+    def test_mode_a_setup_is_shared_by_product_family_plant_and_workcenter(self):
+        loads = [
+            LoadRecord(
+                month="2025-01",
+                planner_name="PlannerA",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=30.0,
+                resource_group_owner="WC1",
+            ),
+            LoadRecord(
+                month="2025-01",
+                planner_name="PlannerA",
+                product="P2",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=30.0,
+                resource_group_owner="WC1",
+            ),
+        ]
+        capacities = [
+            CapacityRecord(
+                product="P1",
+                work_center="WC1",
+                annual_capacity_tons=1200.0,
+                utilization_target=1.0,
+                setup_hours=7.44,
+                setup_reference_annual_capacity_tons=1200.0,
+            ),
+            CapacityRecord(
+                product="P2",
+                work_center="WC1",
+                annual_capacity_tons=1200.0,
+                utilization_target=1.0,
+                setup_hours=7.44,
+                setup_reference_annual_capacity_tons=1200.0,
+            ),
+        ]
+
+        results = run_optimization_mode_a(["2025-01"], loads, capacities)
+
+        internal = [row for row in results if row.allocation_type == "Internal"]
+        self.assertEqual(len(internal), 2)
+        self.assertAlmostEqual(sum(row.allocated_tons for row in internal), 60.0)
+        self.assertEqual(sum(1 for row in internal if row.setup_applied), 1)
+        self.assertAlmostEqual(sum(row.setup_equivalent_tons_by_max for row in internal), 1.0)
+        self.assertAlmostEqual(sum(row.capacity_used_tons for row in internal), 61.0)
+
+    def test_mode_b_setup_is_shared_by_product_family_plant_and_workcenter(self):
+        loads = [
+            LoadRecord(
+                month="2025-01",
+                planner_name="PlannerA",
+                product="P1",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=30.0,
+                resource_group_owner="WC1",
+            ),
+            LoadRecord(
+                month="2025-01",
+                planner_name="PlannerA",
+                product="P2",
+                product_family="F1",
+                plant="PLT1",
+                forecast_tons=30.0,
+                resource_group_owner="WC1",
+            ),
+        ]
+        capacities = [
+            CapacityRecord(
+                product="P1",
+                work_center="WC1",
+                annual_capacity_tons=1200.0,
+                utilization_target=1.0,
+                setup_hours=7.44,
+                setup_reference_annual_capacity_tons=1200.0,
+            ),
+            CapacityRecord(
+                product="P2",
+                work_center="WC1",
+                annual_capacity_tons=1200.0,
+                utilization_target=1.0,
+                setup_hours=7.44,
+                setup_reference_annual_capacity_tons=1200.0,
+            ),
+        ]
+
+        results, _toller_products = run_optimization_mode_b(
+            ["2025-01"],
+            loads,
+            capacities,
+            capacities,
+            [],
+        )
+
+        internal = [row for row in results if row.allocation_type == "Internal"]
+        self.assertEqual(len(internal), 2)
+        self.assertAlmostEqual(sum(row.allocated_tons for row in internal), 60.0)
+        self.assertEqual(sum(1 for row in internal if row.setup_applied), 1)
+        self.assertAlmostEqual(sum(row.setup_equivalent_tons_by_max for row in internal), 1.0)
+        self.assertAlmostEqual(sum(row.capacity_used_tons for row in internal), 61.0)
 
     def test_validate_ignores_utilization_target_range(self):
         capacities = [

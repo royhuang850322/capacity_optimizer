@@ -4441,6 +4441,7 @@ def _sort_allocation_detail_rows(df: pd.DataFrame) -> pd.DataFrame:
         "Month",
         "Plant",
         "WorkCenter",
+        "ProductFamily",
         "Product",
         "PlannerName",
         "Source_Resource",
